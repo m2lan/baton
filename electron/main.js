@@ -18,6 +18,7 @@ const WIN_SIZE = ((process.argv.find((a) => a.startsWith('--win-size=')) || '').
 let win = null;
 let state = { bots: [], settings: {} };
 let agentCache = [];
+const ptyMeta = new Map(); // ptyId -> { botId, mode }
 let detector = null;
 const getDetector = () =>
   (detector ||= new Detector({ cacheFile: path.join(app.getPath('userData'), 'data', 'agents-cache.json') }));
@@ -46,6 +47,7 @@ function createBot(cfg) {
     permission: cfg.permission || 'auto',
     systemPrompt: cfg.systemPrompt || '',
     sessionId: '',
+    authed: null, // null=未知, true=已登录, false=需要登录
     createdAt: Date.now(),
     updatedAt: Date.now(),
     preview: '',
@@ -189,7 +191,11 @@ const runner = new Runner({
     if (bot) {
       bot.updatedAt = Date.now();
       if (text) bot.preview = text;
+      // 从执行结果反推登录态：报鉴权错误=没登录，正常出结果=已登录
+      if (msg.meta && msg.meta.authError) bot.authed = false;
+      else if (msg.status === 'done' && text) bot.authed = true;
       persist();
+      emit('bots:update', state.bots);
     }
   },
 });
@@ -391,7 +397,9 @@ function registerIpc() {
     const bot = state.bots.find((b) => b.id === botId);
     const agent = bot && getAgent(bot.agentId);
     try {
-      const r = await terminal.open({ botId, bot, agent, mode: mode === 'shell' ? 'shell' : 'login', cols, rows });
+      const realMode = mode === 'shell' ? 'shell' : 'login';
+      const r = await terminal.open({ botId, bot, agent, mode: realMode, cols, rows });
+      ptyMeta.set(r.id, { botId, mode: realMode });
       terminal.bind(
         r.id,
         (id, data) => emit('pty:data', { id, data }),
@@ -412,6 +420,17 @@ function registerIpc() {
   });
   ipcMain.handle('pty:close', (_e, id) => {
     terminal.close(id);
+    const meta = ptyMeta.get(id);
+    ptyMeta.delete(id);
+    // 在登录终端里操作过，状态就以「未知」呈现，等下一次真实调用再判定
+    if (meta && meta.mode === 'login') {
+      const bot = state.bots.find((b) => b.id === meta.botId);
+      if (bot && bot.authed !== null) {
+        bot.authed = null;
+        persist();
+        emit('bots:update', state.bots);
+      }
+    }
     return true;
   });
 

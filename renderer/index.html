@@ -105,7 +105,11 @@
           <button class="ghost-btn" @click="openGroupEdit(active)">成员</button>
         </template>
         <template v-else>
-          <button class="ghost-btn" @click="openTerm('login')">登录 / 终端</button>
+          <span v-if="active.authed === true" class="badge ok-badge">已登录</span>
+          <span v-else-if="active.authed === false" class="badge warn-badge">未登录</span>
+          <button class="ghost-btn" @click="openTerm(active.authed === false ? 'login' : 'shell')">
+            {{ active.authed === false ? '去登录' : '终端' }}
+          </button>
           <button class="ghost-btn" @click="openEdit(active)">设置</button>
         </template>
         <button class="ghost-btn" @click="clearChat">清空</button>
