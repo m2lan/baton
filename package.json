@@ -1,7 +1,7 @@
 {
   "name": "baton",
   "productName": "Baton",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Turn the AI CLIs already installed on your machine into a team of named Bots.",
   "author": {
