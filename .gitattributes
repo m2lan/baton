@@ -2,4 +2,11 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.png binary
+*.jpg binary
 *.ico binary
+*.icns binary
+*.node binary
+*.plist text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
