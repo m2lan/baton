@@ -95,11 +95,23 @@ scripts/
 
 ## 网络与代理（很重要）
 
-**默认「直连」**：本应用不会把父进程环境里的 `HTTP(S)_PROXY` 传给 CLI。
+默认「**智能**」：按 CLI 区分，不做一刀切。
 
-这不是洁癖。实测在装了本地代理（如 `127.0.0.1:7897`）的机器上，CodeBuddy 的 `setProxy` 会直接抛 `TypeError: Right-hand side of 'instanceof' is not callable`，随后登录报 `Client network socket disconnected before secure TLS connection was established`。去掉代理变量后一切正常。
+| CLI | 策略 | 原因 |
+| --- | --- | --- |
+| 海外（claude / gemini / codex / copilot / amp …） | **沿用系统代理** | 账号通常依赖固定地区出口，突然直连会让 IP/地区突变，有风控甚至封号风险 |
+| 国内（codebuddy / qwen …） | **直连** | 它们的 `setProxy` 拿到代理变量会抛 `TypeError`，随后报 `socket disconnected before secure TLS connection` |
+| npm 安装 | 沿用系统代理 | 否则装包会挂 |
 
-侧边栏 ⚙ → 设置里可以切「直连 / 跟随系统 / 自定义代理」，还能点「开始诊断」看三个关键域名的 TLS 握手结果（正常会显示毫秒数）。
+设置里还能选「全部跟随系统 / 全部直连 / 自定义代理」，也可以对**单个 CLI** 覆盖；「开始诊断」会按实际生效的策略逐个测 TLS 握手，例如：
+
+```
+api.anthropic.com   代理  正常 · 561ms
+api.openai.com      代理  正常 · 562ms
+copilot.tencent.com 直连  正常 · 32ms
+```
+
+> ⚠️ 除非你确定网络不需要代理，**不要把海外 CLI 切成直连**。终端里那个「仅此 CLI 改直连」按钮也只作用于当前这一个 CLI。
 
 ## 端口冲突
 
@@ -143,7 +155,7 @@ node scripts/test-runner.js codex  "回复 ok"
 - **提示未登录**：点消息里的"在窗口内登录"，底部会拉起该 CLI 的交互式终端（claude 系会给出"输入 /login"按钮），授权完成后关掉面板、把消息重发一次即可。
 - **提示找不到 CLI**：说明它不在 PATH 里，用弹窗里的"安装"或自己装完后点"刷新"。
 - **一直是空输出**：多半是该 CLI 的 `proto` 猜错了，先用 `test-runner.js` 确认原始输出格式。
-- **登录报 TLS / socket disconnected**：几乎都是代理问题。去设置里确认网络是「直连」，点「开始诊断」验证。
+- **登录报 TLS / socket disconnected**：先看设置里的诊断。CodeBuddy 这类国内 CLI 需要直连（智能模式已默认如此）；海外 CLI 若代理挂了，请修好代理而不是切直连。
 - **终端里提示端口 61172 被占用**：关掉 WorkBuddy / CodeBuddy 桌面版再重试，或改用「系统终端」。
 
 ## 已知边界

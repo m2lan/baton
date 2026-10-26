@@ -222,7 +222,7 @@
         <span class="term-cwd">{{shortPath(term.cwd)}}</span>
         <span class="term-hint" v-if="term.mode==='login'">在终端里完成授权，然后关掉面板重发消息</span>
         <span class="term-hint err" v-if="term.err">{{term.err}}</span>
-        <button class="ghost-btn acc" v-if="term.netHint" @click="useDirect">改用直连重试</button>
+        <button class="ghost-btn acc" v-if="term.netHint" @click="useDirect" title="只对这个 CLI 生效">仅此 CLI 改直连</button>
         <button class="ghost-btn acc" v-if="term.slashLogin" @click="sendSlashLogin">输入 /login</button>
         <button class="ghost-btn" @click="restartTerm">重启</button>
         <button class="ghost-btn" @click="openTerminal(active, term.mode==='login')">系统终端</button>
@@ -384,11 +384,18 @@
           <div class="field">
             <span>CLI 网络</span>
             <div class="seg">
-              <button :class="{on: netForm.mode==='direct'}" @click="netForm.mode='direct'">直连</button>
-              <button :class="{on: netForm.mode==='inherit'}" @click="netForm.mode='inherit'">跟随系统</button>
-              <button :class="{on: netForm.mode==='custom'}" @click="netForm.mode='custom'">自定义代理</button>
+              <button :class="{on: netForm.mode==='auto'}" @click="netForm.mode='auto'">智能（推荐）</button>
+              <button :class="{on: netForm.mode==='inherit'}" @click="netForm.mode='inherit'">全部跟随系统</button>
+              <button :class="{on: netForm.mode==='direct'}" @click="netForm.mode='direct'">全部直连</button>
+              <button :class="{on: netForm.mode==='custom'}" @click="netForm.mode='custom'">自定义</button>
             </div>
             <em class="hint">{{netHint}}</em>
+            <div v-if="netForm.mode==='direct'" class="warn-line">
+              ⚠️ 海外 CLI（Claude / Gemini / Codex）直连会让出口 IP 与地区突变，可能触发风控甚至封号，除非你确定不需要代理。
+            </div>
+            <div v-if="overrideList.length" class="override-line">
+              单个 CLI 覆盖：<span v-for="o in overrideList" :key="o.id" class="ov-chip">{{o.id}} → {{o.mode==='direct'?'直连':'代理'}}<button class="ov-x" @click="clearOverride(o.id)">×</button></span>
+            </div>
           </div>
 
           <label class="field" v-if="netForm.mode==='custom'">
@@ -401,6 +408,7 @@
             <div class="diag">
               <div v-for="d in diagRows" :key="d.host" class="diag-row">
                 <span class="diag-host">{{d.host}}</span>
+                <span class="diag-tag">{{d.used}}</span>
                 <span class="diag-val" :class="d.ok ? 'ok' : 'bad'">{{d.ok ? '正常 · ' + d.ms + 'ms' : '失败 · ' + d.error}}</span>
               </div>
               <div v-if="!diagRows.length" class="diag-idle">{{diagBusy ? '测试中…' : '还没测过，点一下开始'}}</div>

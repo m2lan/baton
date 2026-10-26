@@ -144,7 +144,7 @@ createApp({
     const bots = ref([]);
     const groups = ref([]);
     const settings = ref({});
-    const netForm = reactive({ mode: 'direct', url: '' });
+    const netForm = reactive({ mode: 'auto', url: '', perAgent: {} });
     const diag = ref(null);
     const diagBusy = ref(false);
     const activeId = ref('');
@@ -162,7 +162,7 @@ createApp({
     const stream = ref(null);
     const ta = ref(null);
     const termEl = ref(null);
-    const term = reactive({ open: false, id: '', title: '', cwd: '', mode: 'login', err: '', slashLogin: false, netHint: false });
+    const term = reactive({ open: false, id: '', title: '', cwd: '', mode: 'login', err: '', slashLogin: false, netHint: false, agentId: '' });
     let termOut = '';
     let xterm = null;
     let fitAddon = null;
@@ -212,10 +212,16 @@ createApp({
       return `给 ${a.name} 派个活，Enter 发送`;
     });
     const netHint = computed(() => {
-      if (netForm.mode === 'direct') return '不继承系统代理。系统里配了 127.0.0.1 这类代理时，不少 CLI 的 TLS 会握手失败，默认直连最稳。';
-      if (netForm.mode === 'inherit') return '沿用启动本应用时环境里的 HTTP(S)_PROXY，代理挂了 CLI 就会连不上。';
-      return '所有 CLI 与终端都走这个代理，公司内网需要代理时用这个。';
+      if (netForm.mode === 'auto') {
+        return '国内 CLI（CodeBuddy / Qwen）走直连——它们的 setProxy 拿到代理变量会崩；海外 CLI（Claude / Gemini / Codex）沿用系统代理，出口 IP 不变，避免风控。';
+      }
+      if (netForm.mode === 'inherit') return '所有 CLI 都沿用启动本应用时环境里的 HTTP(S)_PROXY。';
+      if (netForm.mode === 'direct') return '所有 CLI 都不带代理。只建议在「完全不需要代理」的网络下使用。';
+      return '所有 CLI 与终端都走这个代理。';
     });
+    const overrideList = computed(() =>
+      Object.entries(netForm.perAgent || {}).map(([id, mode]) => ({ id, mode }))
+    );
     const diagRows = computed(() => (diag.value && diag.value.results) || []);
     const canSaveGroup = computed(() => !!groupForm.name.trim() && groupForm.memberIds.length > 0);
     const installedAgents = computed(() => agents.value.filter((a) => a.installed));
@@ -349,8 +355,7 @@ createApp({
       const data = await window.lb.init();
       agents.value = data.agents || [];
       settings.value = data.settings || {};
-      netForm.mode = (settings.value.proxy && settings.value.proxy.mode) || 'direct';
-      netForm.url = (settings.value.proxy && settings.value.proxy.url) || '';
+      applyProxySettings(settings.value.proxy);
       bots.value = data.bots || [];
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
@@ -564,24 +569,38 @@ createApp({
     }
 
     /* -------- 设置 / 网络 -------- */
+    function applyProxySettings(proxy) {
+      const p = proxy || {};
+      netForm.mode = p.mode || 'auto';
+      netForm.url = p.url || '';
+      netForm.perAgent = { ...(p.perAgent || {}) };
+    }
+
     function openSettings() {
-      netForm.mode = (settings.value.proxy && settings.value.proxy.mode) || 'direct';
-      netForm.url = (settings.value.proxy && settings.value.proxy.url) || '';
+      applyProxySettings(settings.value.proxy);
       diag.value = null;
       modal.value = 'settings';
     }
 
     async function saveNet() {
-      const proxy = { mode: netForm.mode, url: netForm.url.trim() };
+      const proxy = { mode: netForm.mode, url: netForm.url.trim(), perAgent: { ...netForm.perAgent } };
       settings.value = (await window.lb.saveSettings({ proxy })) || settings.value;
       modal.value = null;
+    }
+
+    function clearOverride(agentId) {
+      const next = { ...netForm.perAgent };
+      delete next[agentId];
+      netForm.perAgent = next;
     }
 
     async function runDiagnose() {
       diagBusy.value = true;
       try {
         // 先把当前选择落盘，诊断才会测这一套
-        await window.lb.saveSettings({ proxy: { mode: netForm.mode, url: netForm.url.trim() } });
+        await window.lb.saveSettings({
+          proxy: { mode: netForm.mode, url: netForm.url.trim(), perAgent: { ...netForm.perAgent } },
+        });
         diag.value = await window.lb.diagnose();
       } finally {
         diagBusy.value = false;
@@ -589,8 +608,14 @@ createApp({
     }
 
     async function useDirect() {
-      netForm.mode = 'direct';
-      settings.value = (await window.lb.saveSettings({ proxy: { mode: 'direct', url: netForm.url } })) || settings.value;
+      // 只对这个 CLI 生效：海外 CLI 的代理不能被误伤（出口 IP 突变有风控风险）
+      const aid = term.agentId;
+      if (!aid) return;
+      netForm.perAgent = { ...netForm.perAgent, [aid]: 'direct' };
+      settings.value =
+        (await window.lb.saveSettings({
+          proxy: { mode: netForm.mode, url: netForm.url, perAgent: { ...netForm.perAgent } },
+        })) || settings.value;
       term.netHint = false;
       restartTerm();
     }
@@ -819,6 +844,8 @@ createApp({
         return;
       }
       termOut = '';
+      const tb = bots.value.find((b) => b.id === targetBotId);
+      term.agentId = tb ? tb.agentId : '';
       term.id = r.id;
       term.title = r.title;
       term.cwd = r.cwd;
@@ -883,7 +910,7 @@ createApp({
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
       saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
-      settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect,
+      settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
     };
   },
 }).mount('#app');

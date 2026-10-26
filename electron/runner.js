@@ -38,7 +38,8 @@ function computeDirs() {
 }
 
 /**
- * @param opts.tty 交互式终端：不要塞 NO_COLOR / CI，否则 CLI 会以为自己在 CI 里直接退出
+ * @param opts.tty     交互式终端：不要塞 NO_COLOR / CI，否则 CLI 会以为自己在 CI 里直接退出
+ * @param opts.agentId 按 CLI 决定代理策略（国内直连、海外沿用系统代理）
  */
 function buildEnv(opts = {}) {
   const env = { ...process.env };
@@ -51,8 +52,8 @@ function buildEnv(opts = {}) {
     env.FORCE_COLOR = '0';
     env.NO_COLOR = '1';
   }
-  // 代理策略统一在这里处理：默认直连，避免继承到死代理导致 CLI TLS 失败
-  proxy.applyProxy(env);
+  // 代理策略统一在这里处理（按 CLI 区分，别把海外 CLI 的代理剥掉）
+  proxy.applyProxy(env, opts.agentId);
   return env;
 }
 
@@ -83,7 +84,7 @@ function toCommandLine(file, args) {
 }
 
 function spawnCli(file, args, opts = {}) {
-  const env = buildEnv();
+  const env = buildEnv({ agentId: opts.agentId });
   if (isWin) {
     return spawn(toCommandLine(file, args), {
       shell: true,
@@ -203,7 +204,7 @@ class Runner {
 
     let child;
     try {
-      child = spawnCli(resolved, inv.args, { cwd });
+      child = spawnCli(resolved, inv.args, { cwd, agentId: agent.id });
     } catch (e) {
       return { ok: false, error: `启动失败：${e.message}` };
     }

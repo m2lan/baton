@@ -206,7 +206,18 @@ const room = new Room({
 function registerIpc() {
   ipcMain.handle('app:init', () => {
     state = store.loadState();
-    netCfg.setConfig(state.settings.proxy || { mode: 'direct', url: '' });
+    // v1 曾经把默认值写成全局直连（会剥掉海外 CLI 的代理），这里一次性迁回「智能」
+    const savedProxy = state.settings.proxy;
+    if (!savedProxy || savedProxy.v !== 2) {
+      state.settings.proxy = {
+        mode: 'auto',
+        url: (savedProxy && savedProxy.url) || '',
+        perAgent: (savedProxy && savedProxy.perAgent) || {},
+        v: 2,
+      };
+      persist();
+    }
+    netCfg.setConfig(state.settings.proxy);
     if (!agentCache.length) {
       // 先用「装没装 + 缓存版本」瞬间返回，版本号后台补
       agentCache = getDetector().fast(CATALOG);
@@ -406,7 +417,10 @@ function registerIpc() {
 
   ipcMain.handle('settings:save', (_e, patch) => {
     state.settings = { ...state.settings, ...patch };
-    if (state.settings.proxy) netCfg.setConfig(state.settings.proxy);
+    if (state.settings.proxy) {
+      state.settings.proxy = { ...state.settings.proxy, v: 2 };
+      netCfg.setConfig(state.settings.proxy);
+    }
     persist();
     return state.settings;
   });

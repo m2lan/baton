@@ -81,7 +81,7 @@ function freePort() {
 async function open({ botId, bot, agent, mode, cols, rows }) {
   const target = resolveTarget(bot, agent, mode);
   const id = `p${++seq}`;
-  const env = { ...buildEnv({ tty: true }), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+  const env = { ...buildEnv({ tty: true, agentId: agent && agent.id }), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
 
   // 这类 CLI 的交互模式会复用「稳定的守护端口」（codebuddy 默认 61172），
   // 而宿主 app 往往正占着它；用环境变量指到空闲端口，比 --port 更可靠。

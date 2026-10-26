@@ -1,7 +1,12 @@
 'use strict';
 /**
  * 网络/代理策略：子进程（CLI 运行、内嵌终端、npm 安装）共用一套环境变量处理。
- * 默认直连 —— 系统里存在 127.0.0.1 这类本地代理时，很多 CLI 的 TLS 会被重置。
+ *
+ * 重要：默认「智能」模式，按 CLI 区分，绝不无脑剥代理。
+ *  - 国内 CLI（codebuddy / qwen …）→ 直连。它们自己的 setProxy 在拿到代理变量时会抛
+ *    TypeError，随后报 "socket disconnected before secure TLS connection"。
+ *  - 海外 CLI（claude / gemini / codex / copilot …）→ 沿用系统代理。这些账号往往依赖
+ *    固定地区出口，突然直连会让 IP/地区突变，有风控甚至封号风险。
  */
 const net = require('net');
 const tls = require('tls');
@@ -10,27 +15,47 @@ const PROXY_KEYS = ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTT
 // WorkBuddy/CodeBuddy 宿主注入的内部变量，别让被拉起的 CLI 继承
 const HOST_KEYS = ['CODEBUDDY_SERVICE_PROXY_URL', 'CODEBUDDY_MCP_CONFIG'];
 
-let cfg = { mode: 'direct', url: '' };
+/** 这些 CLI 的后端在国内，直连更稳，且对代理变量敏感 */
+const DOMESTIC = new Set(['codebuddy', 'qwen', 'mimo', 'qoder', 'iflow']);
+
+const MODES = ['auto', 'direct', 'inherit', 'custom'];
+
+let cfg = { mode: 'auto', url: '', perAgent: {} };
 
 function setConfig(next) {
   cfg = { ...cfg, ...(next || {}) };
-  if (!['direct', 'inherit', 'custom'].includes(cfg.mode)) cfg.mode = 'direct';
+  if (!MODES.includes(cfg.mode)) cfg.mode = 'auto';
+  cfg.perAgent = cfg.perAgent && typeof cfg.perAgent === 'object' ? cfg.perAgent : {};
   return cfg;
 }
 
 function getConfig() {
-  return { ...cfg };
+  return { ...cfg, perAgent: { ...cfg.perAgent } };
+}
+
+/**
+ * 某个 CLI 实际生效的模式
+ * @param agentId 不传（如 npm 安装）时按「海外」处理，避免装不上包
+ */
+function modeFor(agentId) {
+  if (agentId && cfg.perAgent && cfg.perAgent[agentId]) return cfg.perAgent[agentId];
+  if (cfg.mode !== 'auto') return cfg.mode;
+  if (!agentId) return 'inherit';
+  return DOMESTIC.has(agentId) ? 'direct' : 'inherit';
 }
 
 /** 就地把代理相关变量写进 env */
-function applyProxy(env) {
+function applyProxy(env, agentId) {
   for (const k of PROXY_KEYS) delete env[k];
   for (const k of HOST_KEYS) delete env[k];
 
-  if (cfg.mode === 'custom' && cfg.url) {
+  const mode = modeFor(agentId);
+  if (mode === 'custom' && cfg.url) {
     env.HTTP_PROXY = env.http_proxy = cfg.url;
     env.HTTPS_PROXY = env.https_proxy = cfg.url;
-  } else if (cfg.mode === 'inherit') {
+    return env;
+  }
+  if (mode === 'inherit') {
     for (const k of PROXY_KEYS) {
       if (process.env[k] !== undefined) env[k] = process.env[k];
     }
@@ -112,27 +137,28 @@ function probeViaProxy(host, proxyUrl, timeout = 8000) {
   });
 }
 
-const HOSTS = ['copilot.tencent.com', 'api.openai.com', 'registry.npmjs.org'];
+/** 每个域名对应哪个 CLI 的策略 */
+const HOSTS = [
+  { host: 'api.anthropic.com', agentId: 'claude', label: 'Claude' },
+  { host: 'api.openai.com', agentId: 'codex', label: 'Codex' },
+  { host: 'copilot.tencent.com', agentId: 'codebuddy', label: 'CodeBuddy' },
+  { host: 'registry.npmjs.org', agentId: null, label: 'npm' },
+];
 
 async function diagnose() {
-  const mode = cfg.mode;
-  const url = cfg.url;
-  const results = [];
-  for (const host of HOSTS) {
-    const r =
-      mode === 'custom' && url
-        ? await probeViaProxy(host, url)
-        : mode === 'inherit' && (process.env.HTTPS_PROXY || process.env.https_proxy)
-        ? await probeViaProxy(host, process.env.HTTPS_PROXY || process.env.https_proxy)
-        : await probeDirect(host);
-    results.push({ host, ...r });
-  }
-  return {
-    mode,
-    url,
-    envProxy: process.env.HTTPS_PROXY || process.env.https_proxy || '',
-    results,
-  };
+  const envProxy = process.env.HTTPS_PROXY || process.env.https_proxy || '';
+  const rows = await Promise.all(
+    HOSTS.map(async (h) => {
+      const mode = modeFor(h.agentId);
+      let r;
+      if (mode === 'custom' && cfg.url) r = await probeViaProxy(h.host, cfg.url);
+      else if (mode === 'inherit' && envProxy) r = await probeViaProxy(h.host, envProxy);
+      else r = await probeDirect(h.host);
+      const used = mode === 'custom' && cfg.url ? '自定义代理' : mode === 'inherit' && envProxy ? '代理' : '直连';
+      return { ...h, mode, used, ...r };
+    })
+  );
+  return { mode: cfg.mode, url: cfg.url, envProxy, results: rows };
 }
 
-module.exports = { setConfig, getConfig, applyProxy, diagnose, probeDirect, probeViaProxy };
+module.exports = { setConfig, getConfig, modeFor, applyProxy, diagnose, probeDirect, probeViaProxy, DOMESTIC };
