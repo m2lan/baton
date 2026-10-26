@@ -104,7 +104,7 @@ function openSystemTerminal(cwd, cmd) {
 
   if (isWin) {
     const inner = `cd /d "${dir}"${cmd ? ` && ${cmd}` : ''}`;
-    return spawn('cmd.exe', ['/c', `start "LocalBot" cmd /k "${inner}"`], {
+    return spawn(process.env.ComSpec || 'cmd.exe', ['/c', `start "Baton" cmd /k "${inner}"`], {
       windowsHide: true,
       detached: true,
       stdio: 'ignore',

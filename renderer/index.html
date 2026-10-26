@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>LocalBot</title>
+  <title>Baton</title>
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -14,7 +14,7 @@
     <div class="brand">
       <div class="brand-mark">◈</div>
       <div class="brand-text">
-        <b>LocalBot</b>
+        <b>Baton</b>
         <small>本机 CLI 团队 · {{installedCount}}/{{agents.length}}</small>
       </div>
       <button class="icon-btn new" title="新建 Bot" @click="openNew">＋</button>
@@ -63,7 +63,7 @@
       <div class="me">
         <div class="avatar small">🦉</div>
         <div class="me-main"><b>本地工作区</b><small>{{runningCount ? runningCount + ' 个 Bot 在跑' : '空闲'}}</small></div>
-        <button class="mini" title="设置" @click="openSettings">⚙</button>
+        <button class="mini" title="设置" @click="openSettings">⚙<i v-if="updateState.state === 'ready'" class="upd-dot"></i></button>
       </div>
     </div>
   </aside>
@@ -420,6 +420,32 @@
             <div class="diag-actions">
               <button class="ghost-btn" :disabled="diagBusy" @click="runDiagnose">{{diagBusy ? '测试中…' : '开始诊断'}}</button>
               <span v-if="diag && diag.envProxy" class="diag-env">系统环境代理：{{diag.envProxy}}</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <span>关于</span>
+            <div class="about">
+              <div class="about-row">
+                <span class="about-ver">Baton v{{appInfo.version || '—'}}</span>
+                <span class="about-state" :class="updateState.state">{{updateLabel}}</span>
+                <span class="spacer"></span>
+                <button
+                  v-if="updateState.state === 'ready'"
+                  class="primary"
+                  @click="installUpdate"
+                >重启并安装</button>
+                <button
+                  v-else
+                  class="ghost-btn"
+                  :disabled="!canCheckUpdate || updateState.state === 'checking' || updateState.state === 'downloading'"
+                  @click="checkUpdate"
+                >{{updateState.state === 'checking' ? '检查中…' : '检查更新'}}</button>
+              </div>
+              <div class="update-bar" v-if="updateState.state === 'downloading'">
+                <i :style="{ width: (updateState.percent || 0) + '%' }"></i>
+              </div>
+              <div class="about-msg" v-if="updateHint">{{updateHint}}</div>
             </div>
           </div>
 

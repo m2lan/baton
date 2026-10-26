@@ -1,9 +1,12 @@
-name: Build
+name: Build & Release
 
 # 三平台各自在自己的 runner 上构建：
 #   - macOS 的 dmg 只能在 macOS 上做（hdiutil + 签名/公证）
 #   - node-pty 是平台相关的预编译二进制，npm 只装当前平台的，跨平台构建会缺
-# 所以这里用矩阵，一个平台一个 job，各自 npm ci 拿到正确的原生模块。
+# 所以用矩阵，一个平台一个 job，各自 npm ci 拿到正确的原生模块。
+#
+# 打 tag（v0.1.0）时，三个 job 会把产物 + latest.yml 一起发布到同一个 draft Release。
+# 你在 GitHub 上点「Publish release」之后，客户端才会检测到更新。
 
 on:
   push:
@@ -11,10 +14,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      draft:
-        description: 只构建不上传 Release
+      publish:
+        description: 同时发布到 GitHub Release（仅打 tag 时有意义）
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -24,7 +27,6 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # 一个平台失败不影响其它平台继续出包
       fail-fast: false
       matrix:
         include:
@@ -32,24 +34,20 @@ jobs:
             os: windows-latest
             platform: win
             arch: x64
-            artifact: release/*.exe
           - name: macos-arm64
             os: macos-latest
             platform: mac
             arch: arm64
-            artifact: release/*.dmg
           - name: macos-x64
             # GitHub 正在逐步下线 Intel runner；若该 job 报 unavailable，
-            # 删掉这一行改用 macos-latest + --arch=x64（需先装 darwin-x64 的 node-pty）
+            # 删掉这一行，改用 macos-latest + --arch=x64（需先装 darwin-x64 的 node-pty）
             os: macos-13
             platform: mac
             arch: x64
-            artifact: release/*.dmg
           - name: linux-x64
             os: ubuntu-latest
             platform: linux
             arch: x64
-            artifact: release/*.AppImage
 
     steps:
       - uses: actions/checkout@v4
@@ -59,11 +57,15 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: 安装依赖
+      - name: Install dependencies
         run: npm ci
 
-      - name: 构建
+      - name: Build
+        shell: bash
         env:
+          # 打 tag 才发布；手动触发默认只出包
+          PUBLISH_MODE: ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 不配签名证书时 electron-builder 会自动跳过签名
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -72,42 +74,19 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # 直连 GitHub，不走国内镜像
-          LOCALBOT_OFFICIAL_MIRROR: '1'
-        run: node scripts/dist.js --${{ matrix.platform }} --arch=${{ matrix.arch }}
+          BATON_OFFICIAL_MIRROR: '1'
+        run: node scripts/dist.js --${{ matrix.platform }} --arch=${{ matrix.arch }} --publish=$PUBLISH_MODE
 
+      # 无论是否发布，都留一份构建产物，方便排查
       - uses: actions/upload-artifact@v4
         with:
-          name: localbot-${{ matrix.name }}
+          name: baton-${{ matrix.name }}
           path: |
             release/*.exe
             release/*.dmg
             release/*.zip
             release/*.AppImage
             release/*.deb
-            release/*.blockmap
+            release/latest*.yml
           if-no-files-found: error
           retention-days: 14
-
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && github.event.inputs.draft != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: false
-
-      - name: 汇总产物
-        run: |
-          mkdir -p out
-          find dist -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
-            -o -name '*.AppImage' -o -name '*.deb' -o -name '*.blockmap' \) \
-            -exec cp {} out/ \;
-          ls -lh out
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: out/*
-          generate_release_notes: true
-          draft: false

@@ -1,14 +1,19 @@
 {
-  "name": "localbot",
-  "productName": "LocalBot",
+  "name": "baton",
+  "productName": "Baton",
   "version": "0.1.0",
   "private": true,
-  "description": "把本机安装的 AI CLI 变成一支 Bot 团队（Grok Bot 思路的本地版）",
+  "description": "Turn the AI CLIs already installed on your machine into a team of named Bots.",
   "author": {
     "name": "ZYK",
     "email": "763960267@qq.com"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/baton.git"
+  },
+  "homepage": "https://github.com/YOUR_GITHUB_USERNAME/baton#readme",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -22,7 +27,8 @@
     "dist:linux": "node scripts/dist.js --linux"
   },
   "dependencies": {
-    "@lydell/node-pty": "^1.2.0-beta.18"
+    "@lydell/node-pty": "^1.2.0-beta.18",
+    "electron-updater": "^6.8.11"
   },
   "devDependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -32,9 +38,9 @@
     "vue": "^3.5.44"
   },
   "build": {
-    "appId": "com.localbot.app",
-    "productName": "LocalBot",
-    "copyright": "Copyright © 2026 LocalBot",
+    "appId": "com.baton.app",
+    "productName": "Baton",
+    "copyright": "Copyright © 2026 Baton",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -77,7 +83,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "LocalBot",
+      "shortcutName": "Baton",
       "deleteAppDataOnUninstall": false,
       "installerLanguages": [
         "zh_CN",
@@ -106,7 +112,7 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "LSMinimumSystemVersion": "11.0",
-        "NSHumanReadableCopyright": "Copyright © 2026 LocalBot"
+        "NSHumanReadableCopyright": "Copyright © 2026 Baton"
       }
     },
     "dmg": {
@@ -147,7 +153,7 @@
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "desktop": {
         "entry": {
-          "Name": "LocalBot",
+          "Name": "Baton",
           "Comment": "本机 AI CLI 的多 Bot 桌面端",
           "Categories": "Development;Utility;",
           "Terminal": "false"

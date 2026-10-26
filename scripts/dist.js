@@ -44,7 +44,9 @@ const fail = (m) => {
 };
 
 const dirOnly = hasFlag('dir');
-const wantOfficial = process.env.LOCALBOT_OFFICIAL_MIRROR === '1';
+const wantOfficial = process.env.LOCALBOT_OFFICIAL_MIRROR === '1' || process.env.BATON_OFFICIAL_MIRROR === '1';
+// publish：never（默认，只出包）/ always（打包后传到 GitHub Releases）
+const publishMode = optValue('publish', 'never');
 
 /* ---------- 目标平台 ---------- */
 const platforms = ['win32', 'darwin', 'linux'].filter((p) =>
@@ -136,7 +138,60 @@ const iw = icon.readUInt32BE(16);
 const ih = icon.readUInt32BE(20);
 if (iw < 512) fail(`图标至少 512×512（当前 ${iw}×${ih}），跑 npm run icon 重新生成`);
 
-/* ---------- 5. 构建 ---------- */
+/* ---------- 5. 发布配置 ---------- */
+/**
+ * 不在 package.json 里写 build.publish —— electron-builder 26 的 schema 校验对
+ * 该字段有缺陷（GithubOptions 引用了未定义的 $ref，导致 anyOf 全部落空，
+ * 报 "publish.0.provider must be equal to constant"）。
+ *
+ * 改为让 electron-builder 从 package.json 的 repository 字段自动推断 GitHub 发布配置，
+ * 这也是它文档里的默认行为（配合 GH_TOKEN + --publish always）。
+ */
+const GH_REPO = process.env.GITHUB_REPOSITORY || '';
+const REPO_PLACEHOLDER = /YOUR_GITHUB_USERNAME/;
+
+// CI 里把占位符换成真实仓库，fork 出去的人不用改配置
+if (GH_REPO.includes('/') && REPO_PLACEHOLDER.test(JSON.stringify(pkg.repository || {}))) {
+  const pkgPath = path.join(ROOT, 'package.json');
+  const raw = fs.readFileSync(pkgPath, 'utf8');
+  if (REPO_PLACEHOLDER.test(raw)) {
+    fs.writeFileSync(
+      pkgPath,
+      raw.replace(
+        /https:\/\/github\.com\/YOUR_GITHUB_USERNAME\/baton\.git/g,
+        `https://github.com/${GH_REPO}.git`
+      ).replace(
+        /https:\/\/github\.com\/YOUR_GITHUB_USERNAME\/baton#readme/g,
+        `https://github.com/${GH_REPO}#readme`
+      )
+    );
+    log(`已把 repository 指向 ${GH_REPO}`);
+  }
+}
+
+const repoUrl = (pkg.repository && pkg.repository.url) || '';
+const unresolvedRepo = REPO_PLACEHOLDER.test(repoUrl) || !/github\.com/i.test(repoUrl);
+
+if (publishMode !== 'never') {
+  if (unresolvedRepo) {
+    fail(
+      [
+        '要发布到 GitHub Releases，先把仓库地址填上：',
+        '',
+        '  package.json → "repository.url" → https://github.com/<你的用户名>/baton.git',
+        '',
+        '（在 GitHub Actions 里会由 GITHUB_REPOSITORY 自动填充，无需手改。）',
+        '发布还需要 GH_TOKEN —— Actions 里用内置的 secrets.GITHUB_TOKEN 即可。',
+      ].join('\n')
+    );
+  }
+  if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
+    fail('发布需要环境变量 GH_TOKEN（GitHub personal access token，repo 权限）。');
+  }
+  log(`发布目标：${repoUrl.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')}`);
+}
+
+/* ---------- 6. 构建 ---------- */
 const eb = require('electron-builder');
 const { build, Platform, Arch } = eb;
 const ARCH_MAP = { x64: Arch.x64, arm64: Arch.arm64 };
@@ -164,7 +219,7 @@ const buildConfig = {
 
 (async () => {
   log('');
-  log(`LocalBot v${pkg.version}   构建机：${os.platform()} ${os.arch()}`);
+  log(`Baton v${pkg.version}   构建机：${os.platform()} ${os.arch()}`);
   log(`目标：${platforms.map((p) => LABEL[p]).join(' + ')}   架构：${arches ? arches.join(', ') : '按 package.json'}`);
   log(`模式：${dirOnly ? '免安装目录（自检用）' : '完整安装包'}   源：${wantOfficial ? '官方' : 'npmmirror 镜像'}`);
   log('');
@@ -177,7 +232,11 @@ const buildConfig = {
       log(`→ ${LABEL[p]} ${a} …`);
       // 「dir」本身就是一个 target，不需要额外的 dir 选项
       const targets = plat.createTarget(dirOnly ? ['dir'] : undefined, ARCH_MAP[a]);
-      await build({ targets, config: buildConfig });
+      // 注意：publish 只能传政策字符串，且不要和 config.publish 同时传，
+      // 否则 electron-builder 会把它们拼进同一个数组导致 schema 校验失败。
+      const opts = { targets, config: buildConfig };
+      if (publishMode !== 'never') opts.publish = publishMode;
+      await build(opts);
     }
   }
 

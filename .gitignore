@@ -2,6 +2,7 @@ node_modules/
 .tmp/
 dist/
 dist-*/
+dl-test*/
 release/
 release-*/
 .build/

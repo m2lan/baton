@@ -1,253 +1,239 @@
-# LocalBot
+# Baton
+
+**English** · [简体中文](README.zh-CN.md)
 
 ![preview](assets/preview.png)
 
-把**本机已经装好的 AI CLI** 变成一支有名字、有头像、有记忆的 Bot 团队。思路照搬 Grok Bot，但"Bot 的电脑"换成你自己的电脑，"模型"换成本机任意一个 CLI。
+Turn the AI CLIs already installed on your machine into a team of named Bots.
 
-> Grok Bot 的核心是：Bot 是同事，不是工具。给它一个名字、一台电脑、一个长期会话，然后把活丢过去。
-> LocalBot 保留这套交互，把执行体从 xAI 的云电脑换成 `claude` / `codex` / `gemini` / `codebuddy` … 这些你已经付过钱的本地 CLI。
+> Grok Bot's insight was that a Bot is a colleague, not a tool: give it a name, a computer, a long-lived conversation, then hand it work.
+> Baton keeps that interaction and swaps out the execution layer — instead of xAI's cloud computer, each Bot runs the `claude` / `codex` / `gemini` / `codebuddy` CLI you already have installed and already pay for.
 
-## 快速开始
+## Why
+
+You probably have three or four agent CLIs on your laptop. Each one is good at something, and each one forgets everything when you close the terminal. Switching between them means losing context, re-explaining your project, and losing track of what was done where.
+
+Baton gives each CLI an identity — a name, an avatar, a working directory, a session that survives restarts — and a shared room where they can hand work to each other.
+
+## What it does
+
+| | |
+| --- | --- |
+| **One Bot = one CLI** | The same CLI can back several Bots with different directories and personas |
+| **Real streaming** | Parses the CLI's `stream-json` / JSONL output; text appears as it is generated, not after |
+| **Visible tool calls** | Reads, commands and edits show up as cards you can expand to see full input/output |
+| **Session continuity** | Records the CLI's session id and `--resume`s on the next turn, across app restarts |
+| **Parallel Bots** | Each Bot is its own process; switch away and it keeps working (green dot in the sidebar) |
+| **Per-Bot working directory** | All file operations are scoped to the directory you assign |
+| **One-click install** | Missing CLIs install from inside the app (npm or the official script), with live logs |
+| **In-window login** | An embedded real terminal (node-pty + xterm.js) so interactive OAuth happens inside the app |
+| **Group chat** | Multiple Bots in one room: `@name` to address someone, an `@` in a reply hands the work over |
+| **Fast startup** | PATH scan returns in ~60ms; versions are cached and filled in concurrently in the background |
+| **Auto-update** | Packaged builds check GitHub Releases and install updates in place |
+
+## Quick start
 
 ```bash
 npm install
 npm start
 ```
 
-Windows 上也可以直接双击 **`start.bat`**（会自动装依赖）。
+On Windows you can also double-click **`start.bat`** (it installs dependencies on first run).
 
-首次启动会自动扫描 PATH 里的 AI CLI，识别到几个就能用几个。点右上角 **＋** 选一个 CLI，起个名字，就可以开聊。
+On first launch Baton scans your PATH for supported CLIs. Click **＋** in the top-right, pick a CLI, name the Bot, and start talking.
 
-## 它做了什么
+## Built-in CLIs
 
-| 能力 | 说明 |
+Anything on your PATH that can take a prompt and print a response works. These have tested adapters:
+
+| CLI | Notes |
 | --- | --- |
-| 一个 Bot = 一个 CLI | 同一个 CLI 可以建多个 Bot，分别绑不同工作目录和角色设定 |
-| 真流式 | 直接解析 CLI 的 `stream-json` / JSONL 输出，文字边生成边显示 |
-| 工具可见 | 读文件、跑命令、改代码都以卡片展示，可展开看完整输入输出 |
-| 会话延续 | 记住 CLI 的 session id，下一轮自动 `--resume`，上下文不断 |
-| 多 Bot 并行 | 每个 Bot 独立进程，切走不中断，侧边栏有小绿点表示在跑 |
-| 工作目录 | Bot 的所有文件操作限定在你指定的目录 |
-| 角色设定 | 每轮自动注入，用来固定人设/分工 |
-| 权限模式 | 自动 / 谨慎 / 只读，映射到各 CLI 自己的权限参数 |
-| 一键安装 | 没装的 CLI 在弹窗里点"安装"就装（npm / 官方脚本），日志实时回显 |
-| 秒开 | 启动只做 PATH 查找（~60ms）先出界面，版本号缓存到磁盘并后台并发补齐（第一次约 2.5s，之后 ~60ms） |
-| 窗口内登录 | 底部内嵌真终端（node-pty + xterm.js），CLI 的交互式授权直接在应用里完成，不用跳外部终端 |
-| 群聊交班 | 多个 Bot 同屏：@ 谁谁回答，Bot 回答里 @ 别人自动把活交出去，一条消息能串起 2~4 个 Bot |
+| Claude Code (`claude`) | stream-json, `/login` inside the app |
+| CodeBuddy (`codebuddy`) | stream-json; needs a free local port (see below) |
+| Codex (`codex`) | `codex exec --json` |
+| Gemini CLI (`gemini`) | `-o stream-json` |
+| OpenCode (`opencode`) | `run --format json` |
+| GitHub Copilot (`copilot`) | text mode |
+| Grok CLI (`grok`) | text mode |
+| Qwen Code (`qwen`) | Gemini-style output |
+| Cursor Agent (`cursor-agent`) | text mode |
+| Amp (`amp`) | text mode |
+| Aider (`aider`) | text mode, auto-commits |
+| Qoder | manual install, website only |
 
-## 已内置的 CLI
+## Adding a CLI
 
-装了就能用（自动探测版本）：`claude`、`codebuddy`、`codex`、`gemini`、`opencode`、`copilot`、`grok`。
-
-未安装但支持一键装：Qoder（跳官网）、Cursor CLI、Qwen Code、Amp、Aider。
-
-每个 CLI 的输出协议差异由 `electron/parsers.js` 抹平：
-
-- `claude` / `codebuddy` → `--output-format stream-json --include-partial-messages`
-- `codex` → `codex exec --json`（+ `resume`）
-- `gemini` → `-o stream-json`
-- `opencode` → `run --format json`
-- 其它 → 通用解析：能认出 JSON 事件就抽文本，认不出就当纯文本流
-
-## 加一个新的 CLI
-
-编辑 `electron/agents.js` 里的 `CATALOG`，加一条：
+One entry in `electron/agents.js`:
 
 ```js
 {
   id: 'mycli',
   name: 'My CLI',
-  emoji: '🧪',
-  color: '#8888ff',
-  bin: 'mycli',                 // PATH 里的可执行文件名
-  proto: 'generic',             // claude | codex | gemini | opencode | generic
-  stdinPrompt: false,           // prompt 走 stdin 还是 argv
-  session: false,               // 支不支持续聊
+  emoji: '🛠️',
+  color: '#7c6bff',
+  bin: 'mycli',            // executable name on PATH
+  proto: 'claude',         // claude | codex | gemini | generic
+  stdinPrompt: true,       // pipe the prompt via stdin instead of argv
+  session: true,           // supports --resume
   permission: false,
-  install: { kind: 'npm', pkg: 'my-cli' },
-  login: 'mycli login',
-  models: [],
+  login: 'mycli auth',
+  install: { kind: 'npm', pkg: 'mycli' },
 }
 ```
 
-如果它的输出是结构化 JSON，在 `parsers.js` 里加一个 `xxxParser`，注册到 `createParser` 即可。不改也能用，只是变成纯文本渲染。
+If the output format doesn't match any existing parser, add one in `electron/parsers.js` and verify it standalone:
 
-## 目录结构
+```bash
+node scripts/test-runner.js mycli "say hello"
+```
+
+## Group chat
+
+Put several Bots in one room. The rules are deliberately simple and predictable:
+
+1. **`@` addresses someone.** Whoever you mention answers, in order, serially — the next one sees what the previous one produced.
+2. **No mention → the lead answers.** Pick a lead in the room settings; it can `@` someone else if it needs help.
+3. **An `@` in a reply is a handoff.** That member gets woken up to continue.
+4. **At most 4 hops per turn, each Bot speaks once**, which prevents two Bots from volleying forever.
+
+Context: every Bot keeps its **own session** inside the room, and each turn's prompt carries a digest of "what the others just said" (14 messages / 2400 chars). So it remembers its own work and knows what its teammates did.
+
+A room can either share one working directory (recommended when they edit the same repo — otherwise one Bot literally cannot see the file another just changed) or let each Bot stay in its own.
+
+## Project layout
 
 ```
 electron/
-  main.js       窗口、IPC、安装流程
-  agents.js     CLI 目录 + 每种 CLI 的命令行拼装
-  parsers.js    各 CLI 输出协议 → 统一事件
-  runner.js     进程管理、流式组装、会话 id 回传
-  store.js      bots.json / chats/*.json 持久化
-  room.js       群聊编排（@ 谁谁答 / 交班）
-  pty.js        内嵌终端（node-pty 会话管理）
-  detect.js     CLI 探测（快扫 + 后台补版本）
-  net.js        代理策略（按 CLI 区分）
-  platform.js   三端差异：可执行后缀、安装脚本、系统终端
-  preload.js    contextBridge 暴露的白名单 API
+  main.js       window, IPC, install flow, auto-update
+  agents.js     CLI catalog + command line construction
+  parsers.js    each CLI's output protocol → unified events
+  runner.js     process management, streaming assembly, session ids
+  store.js      bots.json / chats/*.json persistence
+  room.js       group chat orchestration (@mentions, handoffs)
+  pty.js        embedded terminal (node-pty sessions)
+  detect.js     CLI detection (fast scan + background version fill)
+  net.js        proxy policy per CLI
+  platform.js   the only place with Windows/macOS/Linux branches
+  preload.js    contextBridge whitelist
 renderer/
-  index.html    Vue3 模板（无构建，本地 vendor）
-  app.js        状态、事件订阅、markdown 渲染
-  style.css     深色主题
-build/
-  icon.png              应用图标（1024，打包时转 ico/icns）
-  entitlements.mac.plist macOS 签名权限
-scripts/
-  dist.js         打包入口（平台/架构校验 + 镜像 + 自检）
-  test-runner.js  命令行验证某个 CLI 适配器是否跑通
-  make-icon.js    重新生成应用图标
-.github/workflows/
-  build.yml       三平台 CI：各自在自己系统上出包
+  index.html    Vue 3 templates (no build step, vendored runtime)
+  app.js        state, event wiring, markdown rendering
+  style.css     dark theme
+build/          icon + macOS entitlements
+scripts/        dist.js (packaging), test-runner.js, make-icon.js, bench-detect.js
+.github/        three-platform CI
 ```
 
-数据位置：
+Data lives in the userData directory:
 
-| 平台 | 路径 |
+| Platform | Path |
 | --- | --- |
-| Windows | `%APPDATA%\LocalBot\data\` |
-| macOS | `~/Library/Application Support/LocalBot/data/` |
-| Linux | `~/.config/LocalBot/data/` |
+| Windows | `%APPDATA%\Baton\data\` |
+| macOS | `~/Library/Application Support/Baton/data/` |
+| Linux | `~/.config/Baton/data/` |
 
-删掉 `data/` 即重置（Bot、会话、设置都在里面）。
+Delete `data/` to reset. (Upgrading from the old `LocalBot` name migrates data automatically on first launch.)
 
-## 打包分发
+## Auto-update
+
+Packaged builds check GitHub Releases on startup (and on demand from **⚙ → About**). The flow:
+
+1. CI builds on a `v*` tag and uploads artifacts plus `latest.yml` to a **draft** release.
+2. You review the draft and press **Publish release**.
+3. Installed clients see the new `latest.yml`, download in the background, and offer **Restart and install**.
+
+Point `repository.url` in `package.json` at your repo — electron-builder infers the GitHub publish target from it. Forks need no edits: in CI the URL is rewritten from `GITHUB_REPOSITORY`.
+
+> Note: do **not** add a `build.publish` array. electron-builder 26 has a schema defect where `GithubOptions` references an undefined `$ref`, so any explicit `publish` array fails validation with `publish.0.provider must be equal to constant`. Inference from `repository` works fine.
+
+Unsigned builds still auto-update, but Windows SmartScreen and macOS Gatekeeper will complain about the publisher. To sign:
+
+| Platform | Secrets |
+| --- | --- |
+| Windows | `CSC_LINK`, `CSC_KEY_PASSWORD` |
+| macOS | `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` |
+
+## Packaging
 
 ```bash
-npm run pack        # 只出免安装目录，快速自检
-npm run dist:win    # Windows：nsis 安装包 + portable 免安装 exe
-npm run dist:mac    # macOS：dmg + zip（必须在 macOS 上跑）
-npm run dist:linux  # Linux：AppImage + deb
-npm run dist        # 当前平台
+npm run pack        # unpacked directory only (quick sanity check)
+npm run dist:win    # Windows: NSIS installer + portable exe
+npm run dist:mac    # macOS: dmg + zip (must run on macOS)
+npm run dist:linux  # Linux: AppImage + deb
+npm run dist        # current platform
 ```
 
-产物在 `release/`。Windows 上双击 `start.bat` 是跑源码，`release/` 里才是真正的安装包。
+Artifacts land in `release/`.
 
-### 为什么必须在对应系统上构建
+### Why builds must run on each platform
 
-不是偷懒，是两个硬约束：
-
-| 约束 | 说明 |
+| Constraint | Consequence |
 | --- | --- |
-| **dmg 只能在 macOS 上做** | 依赖 `hdiutil`，签名/公证依赖 Apple 工具链，electron-builder 在别的系统会直接失败 |
-| **node-pty 是分平台的预编译二进制** | `@lydell/node-pty` 用 `optionalDependencies` 分包（`node-pty-darwin-arm64` 等），`npm install` 只装当前平台那一个。在 Windows 上打 mac 包会缺 `darwin-*`，终端在用户机器上直接崩 |
+| `dmg` needs `hdiutil` and Apple's signing tools | macOS artifacts can only be produced on macOS |
+| `@lydell/node-pty` ships per-platform prebuilt binaries via `optionalDependencies` | `npm install` only fetches the host's binary — cross-building produces a package whose terminal crashes on the user's machine |
 
-所以 `scripts/dist.js` 会在构建前检查目标平台的原生模块，缺了就直接报错并给出要装哪个包，而不是打出一个"看起来正常但终端用不了"的包。
+`scripts/dist.js` checks the target platform's native module before building and tells you exactly which package to install rather than silently producing a broken build. The CI matrix handles this by running `npm ci` on each platform.
 
-想在一台机器上出全平台，用仓库自带的 GitHub Actions（`.github/workflows/build.yml`）：三平台矩阵各自 `npm ci` 拿到正确二进制，打 tag `v0.1.0` 时自动汇总到 Release。
-
-### 跨架构
-
-默认只打构建机本身的架构。要打另一个架构（比如在 x64 Windows 上出 arm64 包）：
+Cross-architecture (e.g. arm64 from an x64 machine):
 
 ```bash
 npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
 node scripts/dist.js --win --arch=arm64
 ```
 
-### 签名
+## Network and proxy
 
-未配置证书时 electron-builder 自动跳过签名，Windows 上会出现"未知发布者"提示。
+Default policy is **smart**, per CLI — never one-size-fits-all:
 
-| 平台 | 需要的 secrets |
-| --- | --- |
-| Windows | `CSC_LINK`、`CSC_KEY_PASSWORD` |
-| macOS | `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID` |
-
-macOS 的签名权限已放在 `build/entitlements.mac.plist`（JIT、未签名可执行内存、关闭库校验——node-pty 的 `.node` 必须能加载）。
-
-## 三端差异
-
-代码里所有平台分支都集中在 `electron/platform.js`，只有三处：
-
-| 差异点 | Windows | macOS | Linux |
-| --- | --- | --- | --- |
-| 可执行后缀 | `.cmd` / `.exe` / `.bat` | 无 | 无 |
-| 额外 PATH | `%APPDATA%\npm`、`Program Files\nodejs` | `/opt/homebrew/bin`、`/usr/local/bin`、`~/.volta/bin` … | `~/.local/bin`、`~/.npm-global/bin`、`/snap/bin` … |
-| 系统终端 | `cmd /k` | `osascript` 调 Terminal.app | `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` |
-| 安装脚本解释器 | PowerShell | `/bin/sh` | `/bin/sh` |
-
-一个已知限制：CLI 的**交互式登录**在 Windows 上依赖 `cmd.exe` 包一层 `.cmd` 垫片，这条路径在 macOS/Linux 上是直接 `exec` 原始文件——两边的 PTY 行为都实测过，但 mac 上的 CLI 版本差异更大，遇到问题先看 `scripts/test-pty.js`。
-
-
-## 网络与代理（很重要）
-
-默认「**智能**」：按 CLI 区分，不做一刀切。
-
-| CLI | 策略 | 原因 |
+| CLI | Policy | Why |
 | --- | --- | --- |
-| 海外（claude / gemini / codex / copilot / amp …） | **沿用系统代理** | 账号通常依赖固定地区出口，突然直连会让 IP/地区突变，有风控甚至封号风险 |
-| 国内（codebuddy / qwen …） | **直连** | 它们的 `setProxy` 拿到代理变量会抛 `TypeError`，随后报 `socket disconnected before secure TLS connection` |
-| npm 安装 | 沿用系统代理 | 否则装包会挂 |
+| Overseas (claude / gemini / codex / copilot / amp) | **inherit system proxy** | These accounts are tied to a region; suddenly going direct changes your egress IP and can trigger risk controls or bans |
+| Domestic (codebuddy / qwen) | **direct** | Their `setProxy` throws on proxy env vars, which surfaces as `socket disconnected before secure TLS connection` |
+| npm install | inherit system proxy | Otherwise installs fail |
 
-设置里还能选「全部跟随系统 / 全部直连 / 自定义代理」，也可以对**单个 CLI** 覆盖；「开始诊断」会按实际生效的策略逐个测 TLS 握手，例如：
+**⚙ → Settings** lets you switch between smart / inherit / direct / custom, override a single CLI, and run a TLS handshake diagnostic against the three key domains.
 
-```
-api.anthropic.com   代理  正常 · 561ms
-api.openai.com      代理  正常 · 562ms
-copilot.tencent.com 直连  正常 · 32ms
-```
+> ⚠️ Unless you are certain your network needs no proxy, never switch the overseas CLIs to direct.
 
-> ⚠️ 除非你确定网络不需要代理，**不要把海外 CLI 切成直连**。终端里那个「仅此 CLI 改直连」按钮也只作用于当前这一个 CLI。
+## Port conflict
 
-## 端口冲突
+`codebuddy` uses a stable local daemon port (`61172`) that the **WorkBuddy / CodeBuddy desktop app usually already owns**.
 
-codebuddy 系 CLI 有个「稳定的本地守护端口」（默认 `61172`），而 **WorkBuddy / CodeBuddy 桌面版通常正占着这个端口**。所以：
+- Non-interactive runs get a free port automatically via `--port`, so normal chatting is unaffected.
+- Interactive login cannot take `--port` (the CLI exits silently), so when the port is taken the terminal explains it and suggests closing the host app or using the external terminal.
 
-- **非交互调用**（Bot 干活）：自动分配空闲端口传 `--port`，不受影响。
-- **交互式登录**：CLI 不接受 `--port`（会静默退出），撞端口时终端里会直接说明原因，建议关掉宿主程序后点「重启」，或用右上角「系统终端」到外面登录。
-
-## 群聊怎么跑
-
-一个房间放多个 Bot，规则刻意做得简单可预期：
-
-1. **@ 谁谁回答**：用户消息里 @ 了几个成员，就按顺序依次回答（串行，后一个能看到前一个的结果）。
-2. **没 @ 找负责人**：没人被点名叫时，由群设置里的「负责人」先接；它拿不准可以再 @ 别人。
-3. **回答里 @ = 交班**：Bot 在回答末尾 @ 某个成员，那个成员会被自动叫起来接着做。
-4. **一轮最多 4 跳、每人只说一次**：防止两个 Bot 互相甩锅或无限循环。
-
-上下文怎么保证：每个 Bot 在这个群里都有**独立的 session**，同时每轮 prompt 里会带上「其他人的最近发言」（最多 14 条 / 2400 字），所以它既记得自己做过什么，也知道别人刚说了什么。群消息存在 `chats/<群id>.json`，每条带 `sender`，界面上就能显示是谁在说话。
-
-## 启动为什么会快
-
-`electron/detect.js` 分两步：
-
-1. **fast()** —— 只判断「装没装」+ 读 `agents-cache.json` 里的版本号，同步返回，窗口立刻可用。
-2. **full()** —— 后台并发（4 路）跑 `<cli> --version`，每探到一个就推一次 `agents:update` 让界面自己更新；结果按「路径 + 文件 mtime」缓存，CLI 没升级就不会重复探。
-
-想看耗时：
+## Troubleshooting
 
 ```bash
+# verify one CLI adapter without opening the UI
+node scripts/test-runner.js claude "introduce yourself in one sentence"
+node scripts/test-runner.js codex  "reply ok"
+
+# measure CLI detection time
 node scripts/bench-detect.js
 ```
 
-## 排错
+- **"Not logged in"** — click *Login in window* on the message. A terminal opens at the bottom; for claude-family CLIs there is an *Input /login* button. Finish auth, close the panel, resend.
+- **CLI not found** — it is not on PATH. Use the install button, or install it yourself and hit refresh.
+- **Empty output** — the `proto` is probably wrong. Check the raw output with `test-runner.js`.
+- **TLS / socket disconnected** — check the diagnostic in Settings first. Domestic CLIs need direct; overseas CLIs need a working proxy, not direct.
+- **Port 61172 already in use** — close the WorkBuddy / CodeBuddy desktop app, or use the external terminal.
+- **Installed build does nothing on launch** — there is no console in a packaged app; errors go to `crash.log`:
 
-```bash
-# 单独验证某个 CLI 适配器（不开界面）
-node scripts/test-runner.js claude "用一句话介绍自己"
-node scripts/test-runner.js codex  "回复 ok"
-```
-
-- **提示未登录**：点消息里的"在窗口内登录"，底部会拉起该 CLI 的交互式终端（claude 系会给出"输入 /login"按钮），授权完成后关掉面板、把消息重发一次即可。
-- **提示找不到 CLI**：说明它不在 PATH 里，用弹窗里的"安装"或自己装完后点"刷新"。
-- **一直是空输出**：多半是该 CLI 的 `proto` 猜错了，先用 `test-runner.js` 确认原始输出格式。
-- **登录报 TLS / socket disconnected**：先看设置里的诊断。CodeBuddy 这类国内 CLI 需要直连（智能模式已默认如此）；海外 CLI 若代理挂了，请修好代理而不是切直连。
-- **终端里提示端口 61172 被占用**：关掉 WorkBuddy / CodeBuddy 桌面版再重试，或改用「系统终端」。
-- **双击安装版没反应**：打包后没有控制台，异常会静默消失。看一下 `crash.log`：
-
-  | 平台 | 位置 |
+  | Platform | Path |
   | --- | --- |
-  | Windows | `%APPDATA%\LocalBot\crash.log` |
-  | macOS | `~/Library/Application Support/LocalBot/crash.log` |
-  | Linux | `~/.config/LocalBot/crash.log` |
+  | Windows | `%APPDATA%\Baton\crash.log` |
+  | macOS | `~/Library/Application Support/Baton/crash.log` |
+  | Linux | `~/.config/Baton/crash.log` |
 
-  里面会记录启动参数、页面加载失败原因、渲染进程报错和未捕获异常。
+## Limitations
 
-## 已知边界
+- **Single machine, single user.** No cloud computer, no mobile client. Group chat is locally serialised (one member runs at a time), not cloud-scheduled.
+- **Approval is up front, not mid-run.** Grok Bot can pause and ask you to approve a step; a non-interactive CLI subprocess cannot be taken over mid-flight. Pick the permission mode before you send, or use the CLI's interactive mode.
+- **The interface is currently Chinese only.** Documentation is bilingual; an English UI is on the roadmap.
+- **Windows is the only platform tested so far.** The macOS/Linux branches (PATH locations, system terminal, install interpreters) are written against each platform's conventions and the packaging config is in place, but they have not been run on real hardware. First macOS build should verify the embedded terminal and the external terminal.
+- Running tasks never time out; they die with the window.
 
-- 目前是**单机、单用户**：没有云电脑、没有手机端。群聊是本地串行编排（同一时刻只有一个成员在跑），不是云端并行调度。
-- 权限审批是**事前模式选择**，不是 Grok Bot 那种"执行到一半弹卡片让你点同意"。原因是 CLI 的非交互模式无法中途接管；要审批就用 `plan`/`谨慎` 模式，或者换成 CLI 的交互模式另做 PTY 层。
-- 长任务不会自动超时，进程随窗口关闭一起 kill。
-- **三端代码就绪，但只在 Windows 上实测过**：macOS / Linux 的分支（PATH 目录、系统终端、安装脚本、`platform.js`）是按各自规范写的，打包配置也已就绪，尚未在真机上跑过。首次在 Mac 上构建时，重点验证「内嵌终端」和「系统终端」两处。
+## License
+
+MIT

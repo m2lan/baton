@@ -147,6 +147,8 @@ createApp({
     const netForm = reactive({ mode: 'auto', url: '', perAgent: {} });
     const diag = ref(null);
     const diagBusy = ref(false);
+    const appInfo = reactive({ version: '', packaged: false, platform: '' });
+    const updateState = reactive({ state: 'idle', version: '', percent: 0, message: '' });
     const activeId = ref('');
     const chats = reactive({});
     const running = reactive({});
@@ -357,6 +359,12 @@ createApp({
       settings.value = data.settings || {};
       applyProxySettings(settings.value.proxy);
       bots.value = data.bots || [];
+      if (data.app) {
+        appInfo.version = data.app.version || '';
+        appInfo.packaged = !!data.app.packaged;
+        appInfo.platform = data.app.platform || '';
+        if (data.app.update) Object.assign(updateState, data.app.update);
+      }
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
           running[chatKeyOf(payload.key)] = true;
@@ -373,6 +381,8 @@ createApp({
           roomBusy[payload.key] = !!payload.active;
         } else if (channel === 'rooms:update') {
           groups.value = payload || [];
+        } else if (channel === 'update:state') {
+          Object.assign(updateState, payload || {});
         } else if (channel === 'bots:update') {
           const cur = activeId.value;
           bots.value = payload || [];
@@ -566,6 +576,51 @@ createApp({
       if (b) { b.sessionId = ''; b.preview = ''; }
       const g = groups.value.find((x) => x.id === active.value.id);
       if (g) { g.sessions = {}; g.preview = ''; }
+    }
+
+    /* -------- 自动更新 -------- */
+    const canCheckUpdate = computed(() => appInfo.packaged);
+    const updateLabel = computed(() => {
+      switch (updateState.state) {
+        case 'checking':
+          return '检查中…';
+        case 'available':
+          return `发现 v${updateState.version}`;
+        case 'downloading':
+          return `下载中 ${updateState.percent || 0}%`;
+        case 'ready':
+          return `v${updateState.version} 已就绪`;
+        case 'latest':
+          return '已是最新';
+        case 'error':
+          return '检查失败';
+        case 'disabled':
+          return '开发模式';
+        default:
+          return '';
+      }
+    });
+    const updateHint = computed(() => {
+      if (updateState.state === 'error') return updateState.message || '检查更新失败，稍后再试';
+      if (updateState.state === 'disabled') return updateState.message || '开发模式不检查更新';
+      if (updateState.state === 'ready') return '下载完成，重启后自动安装';
+      if (updateState.state === 'available') return '正在后台下载，完成后会提示重启';
+      if (updateState.state === 'latest') return '当前已是最新版本';
+      return '';
+    });
+
+    async function checkUpdate() {
+      updateState.state = 'checking';
+      updateState.message = '';
+      const r = await window.lb.checkUpdate();
+      if (!r || !r.ok) {
+        updateState.state = 'error';
+        updateState.message = String((r && r.error) || '检查更新失败').slice(0, 200);
+      }
+    }
+
+    async function installUpdate() {
+      await window.lb.installUpdate();
     }
 
     /* -------- 设置 / 网络 -------- */
@@ -911,6 +966,7 @@ createApp({
       saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
+      appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
     };
   },
 }).mount('#app');

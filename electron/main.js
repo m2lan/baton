@@ -22,6 +22,33 @@ function logLine(kind, msg) {
 function logFatal(kind, err) {
   logLine(kind, (err && err.stack) || err);
 }
+
+/**
+ * 这个项目 0.1.0 之前叫 LocalBot，userData 在 %APPDATA%\LocalBot。
+ * 改名后新目录是空的，这里做一次性迁移，别让用户的 Bot 和会话凭空消失。
+ * 只做一次，之后靠标记文件跳过。
+ */
+function migrateLegacyData() {
+  try {
+    const dir = app.getPath('userData');
+    const marker = path.join(dir, '.migrated-from-localbot');
+    if (fs.existsSync(marker)) return;
+
+    const legacy = path.join(path.dirname(dir), 'LocalBot', 'data');
+    const target = path.join(dir, 'data');
+    if (fs.existsSync(target) || !fs.existsSync(legacy)) {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(marker, `nothing to migrate ${new Date().toISOString()}\n`);
+      return;
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    fs.cpSync(legacy, target, { recursive: true });
+    fs.writeFileSync(marker, `copied from ${legacy} at ${new Date().toISOString()}\n`);
+    logLine('migrate', `已从 ${legacy} 迁移到 ${target}`);
+  } catch (e) {
+    logFatal('migrate', e);
+  }
+}
 process.on('uncaughtException', (e) => {
   logFatal('uncaughtException', e);
   console.error(e);
@@ -65,6 +92,91 @@ const getDetector = () =>
 /* ---------------- 事件发送 ---------------- */
 function emit(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send('evt', { channel, payload });
+}
+
+/* ---------------- 自动更新 ---------------- */
+/**
+ * 只在打包后启用（开发态没有 latest.yml，检查会一直报错）。
+ * 更新源是 GitHub Releases：electron-builder 出包时生成 latest.yml，
+ * 客户端拿它跟 package.json 的 version 比。
+ */
+const updateState = {
+  state: 'idle', // idle | checking | available | downloading | ready | latest | error | disabled
+  version: '',
+  percent: 0,
+  message: '',
+};
+
+function setUpdaterState(patch) {
+  Object.assign(updateState, patch);
+  emit('update:state', { ...updateState });
+}
+
+function initUpdater() {
+  if (!app.isPackaged) {
+    setUpdaterState({ state: 'disabled', message: '开发模式不检查更新' });
+    return;
+  }
+
+  // 没配更新源（owner 还是占位符）时直接停用，别让每次启动都报一次错
+  let feed = '';
+  try {
+    feed = fs.readFileSync(path.join(process.resourcesPath || '', 'app-update.yml'), 'utf8');
+  } catch {}
+  if (!feed || /YOUR_GITHUB_USERNAME/.test(feed)) {
+    setUpdaterState({ state: 'disabled', message: '未配置更新源：package.json → build.publish' });
+    return;
+  }
+
+  let autoUpdater;
+  try {
+    autoUpdater = require('electron-updater').autoUpdater;
+  } catch (e) {
+    setUpdaterState({ state: 'disabled', message: '更新模块未加载' });
+    return;
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  // 不主动弹系统通知，交给界面自己展示
+  autoUpdater.on('checking-for-update', () => setUpdaterState({ state: 'checking', message: '' }));
+  autoUpdater.on('update-available', (info) =>
+    setUpdaterState({ state: 'available', version: info.version, message: '' })
+  );
+  autoUpdater.on('update-not-available', () => setUpdaterState({ state: 'latest', message: '' }));
+  autoUpdater.on('download-progress', (p) =>
+    setUpdaterState({ state: 'downloading', percent: Math.round(p.percent || 0) })
+  );
+  autoUpdater.on('update-downloaded', (info) =>
+    setUpdaterState({ state: 'ready', version: info.version, percent: 100 })
+  );
+  autoUpdater.on('error', (e) =>
+    setUpdaterState({ state: 'error', message: String((e && e.message) || e).slice(0, 200) })
+  );
+
+  // 启动后静默检查一次，失败了也不打扰用户
+  setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 6000);
+}
+
+async function checkForUpdatesManually() {
+  if (!app.isPackaged) return { ok: false, error: '开发模式不检查更新' };
+  try {
+    const { autoUpdater } = require('electron-updater');
+    await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (e) {
+    setUpdaterState({ state: 'error', message: String((e && e.message) || e).slice(0, 200) });
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function installUpdate() {
+  try {
+    require('electron-updater').autoUpdater.quitAndInstall(false, true);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* ---------------- Bot CRUD ---------------- */
@@ -277,6 +389,12 @@ function registerIpc() {
       settings: state.settings,
       agents: agentCache,
       catalog: CATALOG.length,
+      app: {
+        version: app.getVersion(),
+        packaged: app.isPackaged,
+        platform: process.platform,
+        update: { ...updateState },
+      },
     };
   });
 
@@ -473,6 +591,11 @@ function registerIpc() {
   });
 
   ipcMain.handle('net:diagnose', async () => netCfg.diagnose());
+
+  /* ---------- 自动更新 ---------- */
+  ipcMain.handle('update:state', () => ({ ...updateState, version_current: app.getVersion() }));
+  ipcMain.handle('update:check', async () => checkForUpdatesManually());
+  ipcMain.handle('update:install', () => installUpdate());
 }
 
 /* ---------------- 窗口 ---------------- */
@@ -488,7 +611,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     backgroundColor: '#08090c',
-    title: 'LocalBot',
+    title: 'Baton',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     show: !SHOT,
     autoHideMenuBar: true,
@@ -557,10 +680,13 @@ function createWindow() {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
-  if (process.platform === 'win32') app.setAppUserModelId('com.localbot.app');
+  if (process.platform === 'win32') app.setAppUserModelId('com.baton.app');
+  // 旧版本叫 LocalBot，先迁移数据再让 store 读
+  migrateLegacyData();
   logLine('boot', `v${app.getVersion()} packaged=${app.isPackaged} shot=${SHOT || '-'} argv=${JSON.stringify(process.argv)}`);
   registerIpc();
   createWindow();
+  initUpdater();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
