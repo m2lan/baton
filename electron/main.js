@@ -2,18 +2,57 @@
 const path = require('path');
 const fs = require('fs');
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, screen } = require('electron');
+
+/**
+ * 打包后没有控制台，主进程异常会静默消失，用户只看到"双击没反应"。
+ * 这里把启动期异常落到 userData/crash.log，排错时先看这个文件。
+ */
+function logLine(kind, msg) {
+  try {
+    const dir = app.getPath('userData');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'crash.log');
+    // 自限体积：超过 256KB 就重开，避免长期运行把磁盘写满
+    try {
+      if (fs.statSync(file).size > 256 * 1024) fs.writeFileSync(file, '');
+    } catch {}
+    fs.appendFileSync(file, `[${new Date().toISOString()}] ${kind}: ${msg}\n`);
+  } catch {}
+}
+function logFatal(kind, err) {
+  logLine(kind, (err && err.stack) || err);
+}
+process.on('uncaughtException', (e) => {
+  logFatal('uncaughtException', e);
+  console.error(e);
+});
+process.on('unhandledRejection', (e) => {
+  logFatal('unhandledRejection', e);
+  console.error(e);
+});
+
 const { CATALOG, getAgent } = require('./agents');
 const store = require('./store');
 const { Runner, spawnCli, resolveBin, killTree } = require('./runner');
 const { Detector } = require('./detect');
 const terminal = require('./pty');
 const netCfg = require('./net');
+const platform = require('./platform');
 const { Room, findMentions } = require('./room');
 
-const SHOT = (process.argv.find((a) => a.startsWith('--shot=')) || '').split('=')[1] || null;
-const SHOT_JS = (process.argv.find((a) => a.startsWith('--shot-js=')) || '').split('=').slice(1).join('=') || null;
-const SHOT_DELAY = Number((process.argv.find((a) => a.startsWith('--shot-delay=')) || '').split('=')[1] || 2600);
-const WIN_SIZE = ((process.argv.find((a) => a.startsWith('--win-size=')) || '').split('=')[1] || '').split('x').map(Number);
+// 调试用参数。打包后 Chromium 会对未知的 --xxx 直接报 "bad option" 退出，
+// 所以同时支持环境变量（LOCALBOT_SHOT / LOCALBOT_SHOT_JS …），CI 与打包版都能用。
+const opt = (name) => {
+  const flag = `--${name}=`;
+  const hit = process.argv.find((a) => a.startsWith(flag));
+  if (hit) return hit.slice(flag.length);
+  const env = `LOCALBOT_${name.toUpperCase().replace(/-/g, '_')}`;
+  return process.env[env] || '';
+};
+const SHOT = opt('shot') || null;
+const SHOT_JS = opt('shot-js') || null;
+const SHOT_DELAY = Number(opt('shot-delay') || 2600);
+const WIN_SIZE = (opt('win-size') || '').split('x').map(Number);
 
 let win = null;
 let state = { bots: [], settings: {} };
@@ -115,23 +154,17 @@ function installAgent(agentId) {
   if (inst.kind === 'manual') return { ok: false, error: inst.hint || '需要手动安装' };
   if (installing) return { ok: false, error: '已有安装任务在进行中' };
 
-  let file;
-  let args;
-  if (inst.kind === 'npm') {
-    file = resolveBin('npm') || 'npm';
-    args = ['install', '-g', inst.pkg];
-  } else if (inst.kind === 'powershell') {
-    file = 'powershell.exe';
-    args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', inst.cmd];
-  } else {
-    file = inst.cmd;
-    args = [];
-  }
+  // 安装命令的差异（npm / PowerShell / sh）统一由 platform 决定
+  const cmd = platform.installCommand(inst, resolveBin('npm'));
+  if (!cmd) return { ok: false, error: inst.hint || '这个平台没有可用的自动安装方式' };
 
   installing = agentId;
-  emit('install:log', { agentId, line: `$ ${inst.kind === 'npm' ? `npm install -g ${inst.pkg}` : inst.cmd}` });
+  emit('install:log', {
+    agentId,
+    line: `$ ${inst.kind === 'npm' ? `npm install -g ${inst.pkg}` : platform.installScriptOf(inst)}`,
+  });
 
-  const child = spawnCli(file, args, { cwd: app.getPath('home') });
+  const child = spawnCli(cmd.file, cmd.args, { cwd: app.getPath('home') });
   const push = (chunk) => {
     const text = chunk.toString('utf8');
     for (const line of text.split(/\r?\n/)) {
@@ -382,14 +415,9 @@ function registerIpc() {
     const bot = state.bots.find((b) => b.id === botId);
     const agent = bot && getAgent(bot.agentId);
     const cwd = (bot && bot.cwd) || app.getPath('home');
-    const cmd = login && agent && agent.login ? `"${agent.login}"` : '';
-    const inner = `cd /d "${cwd}"${cmd ? ` && ${cmd}` : ''}`;
-    if (process.platform === 'win32') {
-      spawnCli('cmd.exe', ['/c', `start "LocalBot" cmd /k "${inner}"`], {});
-    } else {
-      spawnCli('x-terminal-emulator', ['-e', `bash -lc 'cd "${cwd}" && ${cmd || 'bash'}'`], {});
-    }
-    return true;
+    const cmd = login && agent && agent.login ? agent.login : '';
+    const child = platform.openSystemTerminal(cwd, cmd);
+    return { ok: !!child };
   });
 
   /* ---------- 内嵌终端 ---------- */
@@ -480,6 +508,16 @@ function createWindow() {
   }
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  // 加载失败在打包后是静默的（白屏），把原因记下来
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    logFatal('did-fail-load', `${code} ${desc} ${url}`);
+  });
+  if (SHOT || process.argv.includes('--dev')) {
+    win.webContents.on('console-message', (_e, level, message) => {
+      if (level >= 2) logFatal('renderer-console', message);
+    });
+  }
+
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -520,6 +558,7 @@ function createWindow() {
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
   if (process.platform === 'win32') app.setAppUserModelId('com.localbot.app');
+  logLine('boot', `v${app.getVersion()} packaged=${app.isPackaged} shot=${SHOT || '-'} argv=${JSON.stringify(process.argv)}`);
   registerIpc();
   createWindow();
   app.on('activate', () => {

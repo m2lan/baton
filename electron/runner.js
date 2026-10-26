@@ -7,6 +7,7 @@ const net = require('net');
 const { createParser, stripAnsi } = require('./parsers');
 const { buildInvocation } = require('./agents');
 const proxy = require('./net');
+const platform = require('./platform');
 
 const isWin = process.platform === 'win32';
 
@@ -23,17 +24,14 @@ function candidateDirs() {
 
 function computeDirs() {
   const dirs = (process.env.PATH || '').split(isWin ? ';' : ':').filter(Boolean);
-  const home = os.homedir();
-  const extra = [
-    path.join(process.env.APPDATA || '', 'npm'),
-    path.join(home, '.local', 'bin'),
-    path.join(home, '.bun', 'bin'),
-    path.join(home, '.cargo', 'bin'),
-    path.join(home, '.deno', 'bin'),
-    'C:\\Program Files\\nodejs',
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-  ].filter((d) => d && d !== '\\' && fs.existsSync(d));
+  // 各平台「装了但不在 PATH」的目录交给 platform 统一维护
+  const extra = platform.extraBinDirs().filter((d) => {
+    try {
+      return !!d && fs.existsSync(d);
+    } catch {
+      return false;
+    }
+  });
   return [...new Set([...dirs, ...extra])];
 }
 
@@ -60,7 +58,7 @@ function buildEnv(opts = {}) {
 function resolveBin(bin) {
   if (!bin) return null;
   if (path.isAbsolute(bin) && fs.existsSync(bin)) return bin;
-  const exts = isWin ? ['.cmd', '.exe', '.bat', ''] : [''];
+  const exts = platform.BIN_EXTS;
   for (const dir of candidateDirs()) {
     for (const ext of exts) {
       const p = path.join(dir, bin + ext);

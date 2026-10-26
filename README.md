@@ -81,17 +81,95 @@ electron/
   parsers.js    各 CLI 输出协议 → 统一事件
   runner.js     进程管理、流式组装、会话 id 回传
   store.js      bots.json / chats/*.json 持久化
+  room.js       群聊编排（@ 谁谁答 / 交班）
+  pty.js        内嵌终端（node-pty 会话管理）
+  detect.js     CLI 探测（快扫 + 后台补版本）
+  net.js        代理策略（按 CLI 区分）
+  platform.js   三端差异：可执行后缀、安装脚本、系统终端
   preload.js    contextBridge 暴露的白名单 API
 renderer/
   index.html    Vue3 模板（无构建，本地 vendor）
   app.js        状态、事件订阅、markdown 渲染
   style.css     深色主题
+build/
+  icon.png              应用图标（1024，打包时转 ico/icns）
+  entitlements.mac.plist macOS 签名权限
 scripts/
+  dist.js         打包入口（平台/架构校验 + 镜像 + 自检）
   test-runner.js  命令行验证某个 CLI 适配器是否跑通
   make-icon.js    重新生成应用图标
+.github/workflows/
+  build.yml       三平台 CI：各自在自己系统上出包
 ```
 
-数据存在 `%APPDATA%\LocalBot\data\`（macOS/Linux 在对应 userData 目录），删掉即重置。
+数据位置：
+
+| 平台 | 路径 |
+| --- | --- |
+| Windows | `%APPDATA%\LocalBot\data\` |
+| macOS | `~/Library/Application Support/LocalBot/data/` |
+| Linux | `~/.config/LocalBot/data/` |
+
+删掉 `data/` 即重置（Bot、会话、设置都在里面）。
+
+## 打包分发
+
+```bash
+npm run pack        # 只出免安装目录，快速自检
+npm run dist:win    # Windows：nsis 安装包 + portable 免安装 exe
+npm run dist:mac    # macOS：dmg + zip（必须在 macOS 上跑）
+npm run dist:linux  # Linux：AppImage + deb
+npm run dist        # 当前平台
+```
+
+产物在 `release/`。Windows 上双击 `start.bat` 是跑源码，`release/` 里才是真正的安装包。
+
+### 为什么必须在对应系统上构建
+
+不是偷懒，是两个硬约束：
+
+| 约束 | 说明 |
+| --- | --- |
+| **dmg 只能在 macOS 上做** | 依赖 `hdiutil`，签名/公证依赖 Apple 工具链，electron-builder 在别的系统会直接失败 |
+| **node-pty 是分平台的预编译二进制** | `@lydell/node-pty` 用 `optionalDependencies` 分包（`node-pty-darwin-arm64` 等），`npm install` 只装当前平台那一个。在 Windows 上打 mac 包会缺 `darwin-*`，终端在用户机器上直接崩 |
+
+所以 `scripts/dist.js` 会在构建前检查目标平台的原生模块，缺了就直接报错并给出要装哪个包，而不是打出一个"看起来正常但终端用不了"的包。
+
+想在一台机器上出全平台，用仓库自带的 GitHub Actions（`.github/workflows/build.yml`）：三平台矩阵各自 `npm ci` 拿到正确二进制，打 tag `v0.1.0` 时自动汇总到 Release。
+
+### 跨架构
+
+默认只打构建机本身的架构。要打另一个架构（比如在 x64 Windows 上出 arm64 包）：
+
+```bash
+npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
+node scripts/dist.js --win --arch=arm64
+```
+
+### 签名
+
+未配置证书时 electron-builder 自动跳过签名，Windows 上会出现"未知发布者"提示。
+
+| 平台 | 需要的 secrets |
+| --- | --- |
+| Windows | `CSC_LINK`、`CSC_KEY_PASSWORD` |
+| macOS | `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID` |
+
+macOS 的签名权限已放在 `build/entitlements.mac.plist`（JIT、未签名可执行内存、关闭库校验——node-pty 的 `.node` 必须能加载）。
+
+## 三端差异
+
+代码里所有平台分支都集中在 `electron/platform.js`，只有三处：
+
+| 差异点 | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| 可执行后缀 | `.cmd` / `.exe` / `.bat` | 无 | 无 |
+| 额外 PATH | `%APPDATA%\npm`、`Program Files\nodejs` | `/opt/homebrew/bin`、`/usr/local/bin`、`~/.volta/bin` … | `~/.local/bin`、`~/.npm-global/bin`、`/snap/bin` … |
+| 系统终端 | `cmd /k` | `osascript` 调 Terminal.app | `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` |
+| 安装脚本解释器 | PowerShell | `/bin/sh` | `/bin/sh` |
+
+一个已知限制：CLI 的**交互式登录**在 Windows 上依赖 `cmd.exe` 包一层 `.cmd` 垫片，这条路径在 macOS/Linux 上是直接 `exec` 原始文件——两边的 PTY 行为都实测过，但 mac 上的 CLI 版本差异更大，遇到问题先看 `scripts/test-pty.js`。
+
 
 ## 网络与代理（很重要）
 
@@ -157,9 +235,19 @@ node scripts/test-runner.js codex  "回复 ok"
 - **一直是空输出**：多半是该 CLI 的 `proto` 猜错了，先用 `test-runner.js` 确认原始输出格式。
 - **登录报 TLS / socket disconnected**：先看设置里的诊断。CodeBuddy 这类国内 CLI 需要直连（智能模式已默认如此）；海外 CLI 若代理挂了，请修好代理而不是切直连。
 - **终端里提示端口 61172 被占用**：关掉 WorkBuddy / CodeBuddy 桌面版再重试，或改用「系统终端」。
+- **双击安装版没反应**：打包后没有控制台，异常会静默消失。看一下 `crash.log`：
+
+  | 平台 | 位置 |
+  | --- | --- |
+  | Windows | `%APPDATA%\LocalBot\crash.log` |
+  | macOS | `~/Library/Application Support/LocalBot/crash.log` |
+  | Linux | `~/.config/LocalBot/crash.log` |
+
+  里面会记录启动参数、页面加载失败原因、渲染进程报错和未捕获异常。
 
 ## 已知边界
 
 - 目前是**单机、单用户**：没有云电脑、没有手机端。群聊是本地串行编排（同一时刻只有一个成员在跑），不是云端并行调度。
 - 权限审批是**事前模式选择**，不是 Grok Bot 那种"执行到一半弹卡片让你点同意"。原因是 CLI 的非交互模式无法中途接管；要审批就用 `plan`/`谨慎` 模式，或者换成 CLI 的交互模式另做 PTY 层。
 - 长任务不会自动超时，进程随窗口关闭一起 kill。
+- **三端代码就绪，但只在 Windows 上实测过**：macOS / Linux 的分支（PATH 目录、系统终端、安装脚本、`platform.js`）是按各自规范写的，打包配置也已就绪，尚未在真机上跑过。首次在 Mac 上构建时，重点验证「内嵌终端」和「系统终端」两处。

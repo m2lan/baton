@@ -4,16 +4,155 @@
   "version": "0.1.0",
   "private": true,
   "description": "把本机安装的 AI CLI 变成一支 Bot 团队（Grok Bot 思路的本地版）",
+  "author": {
+    "name": "ZYK",
+    "email": "763960267@qq.com"
+  },
+  "license": "UNLICENSED",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev"
+    "dev": "electron . --dev",
+    "icon": "electron scripts/make-icon.js",
+    "bench": "node scripts/bench-detect.js",
+    "pack": "node scripts/dist.js --dir",
+    "dist": "node scripts/dist.js",
+    "dist:win": "node scripts/dist.js --win",
+    "dist:mac": "node scripts/dist.js --mac",
+    "dist:linux": "node scripts/dist.js --linux"
   },
   "dependencies": {
-    "@lydell/node-pty": "^1.2.0-beta.18",
+    "@lydell/node-pty": "^1.2.0-beta.18"
+  },
+  "devDependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "electron": "^33.4.11",
+    "electron-builder": "^26.18.0",
     "vue": "^3.5.44"
+  },
+  "build": {
+    "appId": "com.localbot.app",
+    "productName": "LocalBot",
+    "copyright": "Copyright © 2026 LocalBot",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "assets/icon.png",
+      "package.json",
+      "!**/*.map",
+      "!**/*.md",
+      "!**/{test,tests,__tests__,example,examples,docs}/**"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/@lydell/**"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LocalBot",
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "target": [
+        {
+          "target": "dmg"
+        },
+        {
+          "target": "zip"
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "LSMinimumSystemVersion": "11.0",
+        "NSHumanReadableCopyright": "Copyright © 2026 LocalBot"
+      }
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "synopsis": "本机 AI CLI 的多 Bot 桌面端",
+      "description": "把本机已安装的 AI CLI（Claude Code / CodeBuddy / Codex / Gemini …）变成有名字、有工作目录、可持续会话的 Bot，并支持多 Bot 群聊协作。",
+      "maintainer": "ZYK <763960267@qq.com>",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "desktop": {
+        "entry": {
+          "Name": "LocalBot",
+          "Comment": "本机 AI CLI 的多 Bot 桌面端",
+          "Categories": "Development;Utility;",
+          "Terminal": "false"
+        }
+      }
+    }
   }
 }

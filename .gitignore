@@ -1,8 +1,12 @@
 node_modules/
 .tmp/
 dist/
+dist-*/
 release/
+release-*/
+.build/
 .workbuddy/
 *.log
+*.blockmap
 .DS_Store
 Thumbs.db
