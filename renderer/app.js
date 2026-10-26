@@ -142,9 +142,11 @@ createApp({
   setup() {
     const agents = ref([]);
     const bots = ref([]);
+    const groups = ref([]);
     const activeId = ref('');
     const chats = reactive({});
     const running = reactive({});
+    const roomBusy = reactive({});
     const query = ref('');
     const draft = ref('');
     const modal = ref(null);
@@ -165,6 +167,9 @@ createApp({
       agentId: '', name: '', emoji: '🤖', cwd: '', model: '', permission: 'auto', systemPrompt: '', id: '',
     });
 
+    const groupForm = reactive({ id: '', name: '', cwd: '', memberIds: [], leaderId: '' });
+    const mention = reactive({ open: false, query: '', index: 0, list: [] });
+
     const perms = [
       { v: 'auto', label: '自动', tip: 'Bot 自己决定，不再问你 —— 适合明确任务' },
       { v: 'default', label: '谨慎', tip: '涉及写入/执行时按 CLI 默认策略询问' },
@@ -172,16 +177,40 @@ createApp({
     ];
 
     /* -------- 派生 -------- */
-    const active = computed(() => bots.value.find((b) => b.id === activeId.value) || null);
+    const convos = computed(() => {
+      const gs = groups.value.map((g) => ({
+        ...g,
+        kind: 'group',
+        members: (g.memberIds || []).map((id) => bots.value.find((b) => b.id === id)).filter(Boolean),
+      }));
+      const bs = bots.value.map((b) => ({ ...b, kind: 'bot' }));
+      return [...gs, ...bs].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    });
+    const active = computed(() => convos.value.find((c) => c.id === activeId.value) || null);
     const filtered = computed(() => {
       const q = query.value.trim().toLowerCase();
-      if (!q) return bots.value;
-      return bots.value.filter((b) => (b.name + ' ' + (b.preview || '')).toLowerCase().includes(q));
+      if (!q) return convos.value;
+      return convos.value.filter((c) => (c.name + ' ' + (c.preview || '')).toLowerCase().includes(q));
     });
+    const isBusy = (id) => !!running[id] || !!roomBusy[id];
+    const leaderName = computed(() => {
+      const a = active.value;
+      if (!a || a.kind !== 'group') return '';
+      const l = a.members.find((m) => m.id === a.leaderId) || a.members[0];
+      return l ? l.name : '';
+    });
+    const placeholder = computed(() => {
+      const a = active.value;
+      if (!a) return '';
+      if (isBusy(a.id)) return '正在干活，可以先去别的会话看看…';
+      if (a.kind === 'group') return '在群里说点什么，@ 某个 Bot 让它回答';
+      return `给 ${a.name} 派个活，Enter 发送`;
+    });
+    const canSaveGroup = computed(() => !!groupForm.name.trim() && groupForm.memberIds.length > 0);
     const installedAgents = computed(() => agents.value.filter((a) => a.installed));
     const notInstalled = computed(() => agents.value.filter((a) => !a.installed));
     const installedCount = computed(() => installedAgents.value.length);
-    const runningCount = computed(() => Object.values(running).filter(Boolean).length);
+    const runningCount = computed(() => Object.keys(running).filter((k) => running[k]).length + Object.keys(roomBusy).filter((k) => roomBusy[k]).length);
     const messages = computed(() => chats[activeId.value] || []);
     const selectedAgent = computed(() => agents.value.find((a) => a.id === form.agentId) || null);
     const canSave = computed(() => {
@@ -239,10 +268,42 @@ createApp({
       } catch {}
       return s.length > 76 ? s.slice(0, 76) + '…' : s;
     };
+    const agentNameOf = (x) => {
+      if (!x) return '';
+      const a = agents.value.find((v) => v.id === x.agentId);
+      return a ? a.name : '';
+    };
+    const senderOf = (m) => {
+      const a = active.value;
+      if (m && m.sender) {
+        const bot = bots.value.find((b) => b.id === m.sender.id);
+        return bot || m.sender;
+      }
+      return a || { name: '', emoji: '🤖', color: '#7c6bff' };
+    };
+    const renderUserText = (text) => {
+      const raw = String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      const a = active.value;
+      if (!a || a.kind !== 'group' || !a.members.length) return raw.replace(/\n/g, '<br>');
+      const names = a.members
+        .map((m) => m.name)
+        .filter(Boolean)
+        .sort((x, y) => y.length - x.length)
+        .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      if (!names.length) return raw.replace(/\n/g, '<br>');
+      const re = new RegExp('@(' + names.join('|') + ')', 'g');
+      return raw.replace(re, '<span class="at">@$1</span>').replace(/\n/g, '<br>');
+    };
     const copy = (m) => {
       const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text).join('\n');
       navigator.clipboard.writeText(text);
     };
+
+    // 群聊的 run key 是 gid:botId，消息归属还是 gid
+    const chatKeyOf = (key) => String(key || '').split(':')[0];
 
     /* -------- 消息/滚动 -------- */
     function upsert(botId, msg) {
@@ -279,19 +340,24 @@ createApp({
       bots.value = data.bots || [];
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
-          running[payload.botId] = true;
+          running[chatKeyOf(payload.key)] = true;
           scrollBottom();
         } else if (channel === 'run:msg') {
-          running[payload.botId] = true;
-          upsert(payload.botId, payload.msg);
+          running[chatKeyOf(payload.key)] = true;
+          upsert(chatKeyOf(payload.key), payload.msg);
         } else if (channel === 'run:done') {
-          running[payload.botId] = false;
-          upsert(payload.botId, payload.msg);
+          const ck = chatKeyOf(payload.key);
+          running[ck] = false;
+          upsert(ck, payload.msg);
           refreshBots();
+        } else if (channel === 'room:state') {
+          roomBusy[payload.key] = !!payload.active;
+        } else if (channel === 'rooms:update') {
+          groups.value = payload || [];
         } else if (channel === 'bots:update') {
           const cur = activeId.value;
           bots.value = payload || [];
-          if (cur && !bots.value.find((b) => b.id === cur)) activeId.value = '';
+          if (cur && !bots.value.find((b) => b.id === cur) && !groups.value.find((g) => g.id === cur)) activeId.value = '';
         } else if (channel === 'agents:update') {
           agents.value = payload || [];
           for (const a of agents.value) if (a.installed) delete installing[a.id];
@@ -307,13 +373,15 @@ createApp({
         }
       });
 
-      const first = bots.value[0];
+      groups.value = data.groups || [];
+      const first = convos.value[0];
       if (first) await select(first.id);
     }
 
     async function refreshBots() {
       const data = await window.lb.init();
       bots.value = data.bots || [];
+      groups.value = data.groups || [];
     }
 
     async function refreshAgents() {
@@ -323,6 +391,7 @@ createApp({
     async function select(id) {
       if (term.open && id !== activeId.value) closeTerm();
       activeId.value = id;
+      mention.open = false;
       Object.keys(openThink).forEach((k) => delete openThink[k]);
       Object.keys(openTool).forEach((k) => delete openTool[k]);
       if (!chats[id]) chats[id] = await window.lb.getMessages(id);
@@ -434,14 +503,16 @@ createApp({
     async function send() {
       const text = draft.value.trim();
       if (!text || !active.value) return;
-      const bot = active.value;
-      if (running[bot.id]) return;
+      const conv = active.value;
+      if (isBusy(conv.id)) return;
+      mention.open = false;
       draft.value = '';
       autoGrow();
       stick.value = true;
-      const r = await window.lb.send(bot.id, text);
-      if (r.userMsg) upsert(bot.id, r.userMsg);
-      if (r.errMsg) upsert(bot.id, r.errMsg);
+      const r = await window.lb.send(conv.id, text);
+      if (r.userMsg) upsert(conv.id, r.userMsg);
+      if (r.errMsg) upsert(conv.id, r.errMsg);
+      if (r.group) roomBusy[conv.id] = true;
       scrollBottom(true);
       if (r.error) console.warn(r.error);
     }
@@ -456,6 +527,120 @@ createApp({
       chats[active.value.id] = [];
       const b = bots.value.find((x) => x.id === active.value.id);
       if (b) { b.sessionId = ''; b.preview = ''; }
+      const g = groups.value.find((x) => x.id === active.value.id);
+      if (g) { g.sessions = {}; g.preview = ''; }
+    }
+
+    /* -------- 群聊 -------- */
+    function openGroupNew() {
+      groupForm.id = '';
+      groupForm.name = '协作小组';
+      groupForm.cwd = '';
+      groupForm.memberIds = bots.value.slice(0, 2).map((b) => b.id);
+      groupForm.leaderId = groupForm.memberIds[0] || '';
+      modal.value = 'group';
+    }
+
+    function openGroupEdit(group) {
+      groupForm.id = group.id;
+      groupForm.name = group.name;
+      groupForm.cwd = group.cwd || '';
+      groupForm.memberIds = [...(group.memberIds || [])];
+      groupForm.leaderId = group.leaderId || groupForm.memberIds[0] || '';
+      modal.value = 'group';
+    }
+
+    function toggleMember(id) {
+      const i = groupForm.memberIds.indexOf(id);
+      if (i >= 0) groupForm.memberIds.splice(i, 1);
+      else groupForm.memberIds.push(id);
+      if (!groupForm.memberIds.includes(groupForm.leaderId)) groupForm.leaderId = groupForm.memberIds[0] || '';
+    }
+
+    async function pickGroupDir() {
+      const dir = await window.lb.pickDir();
+      if (dir) groupForm.cwd = dir;
+    }
+
+    async function saveGroup() {
+      if (!canSaveGroup.value) return;
+      const patch = {
+        name: groupForm.name.trim(),
+        cwd: groupForm.cwd.trim(),
+        memberIds: [...groupForm.memberIds],
+        leaderId: groupForm.leaderId || groupForm.memberIds[0],
+      };
+      if (groupForm.id) {
+        const g = await window.lb.updateGroup(groupForm.id, patch);
+        const i = groups.value.findIndex((x) => x.id === groupForm.id);
+        if (i >= 0 && g) groups.value[i] = g;
+        modal.value = null;
+      } else {
+        const g = await window.lb.createGroup(patch);
+        groups.value = [g, ...groups.value.filter((x) => x.id !== g.id)];
+        chats[g.id] = [];
+        modal.value = null;
+        await select(g.id);
+      }
+    }
+
+    async function removeGroup() {
+      if (!groupForm.id) return;
+      await window.lb.deleteGroup(groupForm.id);
+      groups.value = groups.value.filter((g) => g.id !== groupForm.id);
+      if (activeId.value === groupForm.id) activeId.value = '';
+      modal.value = null;
+    }
+
+    /* -------- @ 成员 -------- */
+    function refreshMention() {
+      const a = active.value;
+      if (!a || a.kind !== 'group' || !ta.value) {
+        mention.open = false;
+        return;
+      }
+      const pos = ta.value.selectionStart || 0;
+      const before = draft.value.slice(0, pos);
+      const m = before.match(/@([^\s@]{0,16})$/);
+      if (!m) {
+        mention.open = false;
+        return;
+      }
+      const q = m[1].toLowerCase();
+      mention.query = m[1];
+      mention.list = a.members.filter((x) => {
+        if (!q) return true;
+        return x.name.toLowerCase().includes(q) || String(agentNameOf(x) || '').toLowerCase().includes(q);
+      });
+      mention.index = 0;
+      mention.open = mention.list.length > 0;
+    }
+
+    function applyMention(member) {
+      const el = ta.value;
+      const pos = el ? el.selectionStart || 0 : draft.value.length;
+      const head = draft.value.slice(0, pos).replace(/@([^\s@]{0,16})$/, `@${member.name} `);
+      draft.value = head + draft.value.slice(pos);
+      mention.open = false;
+      nextTick(() => {
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(head.length, head.length);
+        autoGrow();
+      });
+    }
+
+    function onDraftInput() {
+      autoGrow();
+      refreshMention();
+    }
+
+    /** 群聊里某个 Bot 要登录时，定位到它 */
+    function openTermFor(m) {
+      const botId = (m && m.sender && m.sender.id) || active.value.id;
+      const bot = bots.value.find((b) => b.id === botId);
+      if (!bot) return;
+      openTerm('login', bot.id);
     }
 
     function useStarter(text) {
@@ -477,6 +662,26 @@ createApp({
     }
 
     function onKey(e) {
+      if (mention.open) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          const n = mention.list.length;
+          const d = e.key === 'ArrowDown' ? 1 : -1;
+          mention.index = (mention.index + d + n) % n;
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          const m = mention.list[mention.index];
+          if (m) applyMention(m);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          mention.open = false;
+          return;
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         send();
@@ -530,8 +735,12 @@ createApp({
       } catch {}
     }
 
-    async function openTerm(mode) {
+    async function openTerm(mode, botId) {
       if (!active.value) return;
+      const targetBotId =
+        botId ||
+        (active.value.kind === 'bot' ? active.value.id : (active.value.members[0] || {}).id);
+      if (!targetBotId) return;
       term.mode = mode === 'shell' ? 'shell' : 'login';
       term.err = '';
       term.open = true;
@@ -539,7 +748,7 @@ createApp({
       ensureXterm();
       fitTerm();
       term.cwd = active.value.cwd || '';
-      const r = await window.lb.ptyOpen(active.value.id, term.mode, xterm ? xterm.cols : 100, xterm ? xterm.rows : 26);
+      const r = await window.lb.ptyOpen(targetBotId, term.mode, xterm ? xterm.cols : 100, xterm ? xterm.rows : 26);
       if (!r.ok) {
         term.err = r.error;
         return;
@@ -604,7 +813,10 @@ createApp({
       select, refreshBots, refreshAgents, openNew, openEdit, closeModals, pickAgent,
       install, pickDir, save, removeBot, send, stop, clearChat, autoGrow, onKey, toggle,
       openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,
-      term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin,
+      term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
+      groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
+      saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos,
+      leaderName, placeholder, senderOf, agentNameOf, renderUserText,
     };
   },
 }).mount('#app');

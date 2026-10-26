@@ -31,8 +31,9 @@ function writeJson(file, data) {
 
 /* ---------- state (bots + settings) ---------- */
 function loadState() {
-  const s = readJson(botsFile(), null) || { bots: [], settings: {} };
+  const s = readJson(botsFile(), null) || { bots: [], groups: [], settings: {} };
   s.bots = Array.isArray(s.bots) ? s.bots : [];
+  s.groups = Array.isArray(s.groups) ? s.groups : [];
   s.settings = s.settings || {};
   return s;
 }

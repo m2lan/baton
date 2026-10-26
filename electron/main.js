@@ -7,6 +7,7 @@ const store = require('./store');
 const { Runner, spawnCli, resolveBin, killTree } = require('./runner');
 const { Detector } = require('./detect');
 const terminal = require('./pty');
+const { Room, findMentions } = require('./room');
 
 const SHOT = (process.argv.find((a) => a.startsWith('--shot=')) || '').split('=')[1] || null;
 const SHOT_JS = (process.argv.find((a) => a.startsWith('--shot-js=')) || '').split('=').slice(1).join('=') || null;
@@ -61,6 +62,46 @@ function updateBot(id, patch) {
   return bot;
 }
 
+/* ---------------- 群聊 ---------------- */
+const isGroupKey = (key) => String(key || '').startsWith('g_');
+
+function createGroup(cfg) {
+  const memberIds = (cfg.memberIds || []).filter((id) => state.bots.some((b) => b.id === id));
+  if (memberIds.length < 1) throw new Error('至少选一个 Bot');
+  const group = {
+    id: `g_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+    name: cfg.name || '新群聊',
+    emoji: cfg.emoji || '👥',
+    color: cfg.color || '#7c6bff',
+    memberIds,
+    leaderId: cfg.leaderId || memberIds[0],
+    cwd: cfg.cwd || '',
+    sessions: {},
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    preview: '',
+  };
+  state.groups.unshift(group);
+  persist();
+  return group;
+}
+
+function updateGroup(id, patch) {
+  const g = state.groups.find((x) => x.id === id);
+  if (!g) return null;
+  if (patch.memberIds) {
+    patch.memberIds = patch.memberIds.filter((bid) => state.bots.some((b) => b.id === bid));
+    if (!patch.memberIds.includes(g.leaderId)) patch.leaderId = patch.memberIds[0] || '';
+    // 被移出的成员清掉它的群内会话，避免上下文错位
+    for (const bid of Object.keys(g.sessions || {})) {
+      if (!patch.memberIds.includes(bid)) delete g.sessions[bid];
+    }
+  }
+  Object.assign(g, patch, { updatedAt: Date.now() });
+  persist();
+  return g;
+}
+
 /* ---------------- 安装 ---------------- */
 let installing = null;
 
@@ -109,8 +150,19 @@ function installAgent(agentId) {
 /* ---------------- Runner ---------------- */
 const runner = new Runner({
   emit,
-  onSession: (botId, sid) => {
-    const bot = state.bots.find((b) => b.id === botId);
+  onSession: (key, sid) => {
+    if (isGroupKey(key)) {
+      const [gid, botId] = key.split(':');
+      const g = state.groups.find((x) => x.id === gid);
+      if (!g || !botId) return;
+      g.sessions = g.sessions || {};
+      if (g.sessions[botId] !== sid) {
+        g.sessions[botId] = sid;
+        persist();
+      }
+      return;
+    }
+    const bot = state.bots.find((b) => b.id === key);
     if (bot && bot.sessionId !== sid) {
       bot.sessionId = sid;
       bot.updatedAt = Date.now();
@@ -118,15 +170,35 @@ const runner = new Runner({
       emit('bots:update', state.bots);
     }
   },
-  onMessage: (botId, msg) => {
-    store.appendMessage(botId, msg);
-    const bot = state.bots.find((b) => b.id === botId);
+  onMessage: (key, msg) => {
+    // 群聊的 key 是 gid:botId，落盘只认 gid（否则 Windows 会把冒号当成 NTFS 数据流）
+    const chatKey = isGroupKey(key) ? key.split(':')[0] : key;
+    store.appendMessage(chatKey, msg);
+    const text = (msg.parts.find((p) => p.type === 'text' && p.text) || {}).text || '';
+    if (isGroupKey(key)) {
+      const g = state.groups.find((x) => x.id === chatKey);
+      if (g) {
+        g.updatedAt = Date.now();
+        if (text) g.preview = text;
+        persist();
+      }
+      return;
+    }
+    const bot = state.bots.find((b) => b.id === key);
     if (bot) {
       bot.updatedAt = Date.now();
-      bot.preview = (msg.parts.find((p) => p.type === 'text' && p.text) || {}).text || bot.preview;
+      if (text) bot.preview = text;
       persist();
     }
   },
+});
+
+const room = new Room({
+  runner,
+  store,
+  getBot: (id) => state.bots.find((b) => b.id === id),
+  emit,
+  onChange: () => emit('rooms:update', state.groups),
 });
 
 /* ---------------- IPC ---------------- */
@@ -147,7 +219,13 @@ function registerIpc() {
         })
         .catch(() => {});
     }
-    return { bots: state.bots, settings: state.settings, agents: agentCache, catalog: CATALOG.length };
+    return {
+      bots: state.bots,
+      groups: state.groups,
+      settings: state.settings,
+      agents: agentCache,
+      catalog: CATALOG.length,
+    };
   });
 
   ipcMain.handle('agents:detect', async () => {
@@ -168,22 +246,77 @@ function registerIpc() {
     runner.stop(id);
     state.bots = state.bots.filter((b) => b.id !== id);
     store.deleteChat(id);
+    for (const g of state.groups) {
+      if ((g.memberIds || []).includes(id)) {
+        g.memberIds = g.memberIds.filter((x) => x !== id);
+        if (g.leaderId === id) g.leaderId = g.memberIds[0] || '';
+        if (g.sessions) delete g.sessions[id];
+      }
+    }
+    persist();
+    emit('rooms:update', state.groups);
+    return true;
+  });
+
+  ipcMain.handle('groups:create', (_e, cfg) => createGroup(cfg));
+  ipcMain.handle('groups:update', (_e, id, patch) => {
+    const g = updateGroup(id, patch);
+    emit('rooms:update', state.groups);
+    return g;
+  });
+  ipcMain.handle('groups:delete', (_e, id) => {
+    room.stop(id);
+    state.groups = state.groups.filter((g) => g.id !== id);
+    store.deleteChat(id);
     persist();
     return true;
   });
 
   ipcMain.handle('chat:get', (_e, botId) => store.getMessages(botId));
-  ipcMain.handle('chat:clear', (_e, botId) => {
-    runner.stop(botId);
-    store.clearMessages(botId);
-    updateBot(botId, { sessionId: '', preview: '' });
-    emit('bots:update', state.bots);
+  ipcMain.handle('chat:clear', (_e, key) => {
+    room.stop(key);
+    runner.stop(key);
+    store.clearMessages(key);
+    if (isGroupKey(key)) {
+      const g = state.groups.find((x) => x.id === key);
+      if (g) {
+        g.sessions = {};
+        g.preview = '';
+        persist();
+        emit('rooms:update', state.groups);
+      }
+    } else {
+      updateBot(key, { sessionId: '', preview: '' });
+      emit('bots:update', state.bots);
+    }
     return true;
   });
-  ipcMain.handle('chat:stop', (_e, botId) => runner.stop(botId));
+  ipcMain.handle('chat:stop', (_e, key) => (isGroupKey(key) ? room.stop(key) : runner.stop(key)));
 
-  ipcMain.handle('chat:send', (_e, { botId, text }) => {
-    const bot = state.bots.find((b) => b.id === botId);
+  ipcMain.handle('chat:send', (_e, payload) => {
+    const key = payload.key || payload.botId;
+    const text = payload.text;
+
+    if (isGroupKey(key)) {
+      const group = state.groups.find((g) => g.id === key);
+      if (!group) return { ok: false, error: '群聊不存在' };
+      const userMsg = {
+        id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        role: 'user',
+        parts: [{ type: 'text', text }],
+        status: 'done',
+        createdAt: Date.now(),
+        mentions: findMentions(text, group.memberIds.map((id) => state.bots.find((b) => b.id === id)).filter(Boolean)),
+      };
+      store.appendMessage(key, userMsg);
+      group.updatedAt = Date.now();
+      group.preview = text.slice(0, 60);
+      persist();
+      room.send(group, text, userMsg).catch((e) => room.pushSystem(key, `编排出错：${e.message}`));
+      return { ok: true, userMsg, group: true };
+    }
+
+    const bot = state.bots.find((b) => b.id === key);
     if (!bot) return { ok: false, error: 'Bot 不存在' };
     const agent = getAgent(bot.agentId);
     const userMsg = {
@@ -193,12 +326,12 @@ function registerIpc() {
       status: 'done',
       createdAt: Date.now(),
     };
-    store.appendMessage(botId, userMsg);
+    store.appendMessage(key, userMsg);
     bot.updatedAt = Date.now();
     bot.preview = text.slice(0, 60);
     persist();
 
-    const r = runner.run(bot, agent, text);
+    const r = runner.run(bot, agent, text, { key });
     if (!r.ok) {
       const errMsg = {
         id: `m_${Date.now().toString(36)}err`,
@@ -207,7 +340,7 @@ function registerIpc() {
         status: 'error',
         createdAt: Date.now(),
       };
-      store.appendMessage(botId, errMsg);
+      store.appendMessage(key, errMsg);
       return { ok: false, error: r.error, userMsg, errMsg };
     }
     return { ok: true, userMsg, msgId: r.msg.id };
@@ -323,10 +456,15 @@ function createWindow() {
   if (SHOT) {
     win.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
-        win.showInactive();
+        win.webContents.setBackgroundThrottling(false);
+        win.show();
+        win.focus();
         try {
           if (SHOT_JS) {
-            const r = await win.webContents.executeJavaScript(SHOT_JS);
+            const r = await Promise.race([
+              win.webContents.executeJavaScript(SHOT_JS).catch((e) => `ERR: ${e.message}`),
+              new Promise((res) => setTimeout(() => res('TIMEOUT'), 60000)),
+            ]);
             console.log('[shot-js]', r);
           }
           await new Promise((r) => setTimeout(r, 600));

@@ -22,31 +22,33 @@
 
     <div class="search">
       <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input v-model="query" placeholder="搜索 Bot" />
+      <input v-model="query" placeholder="搜索会话" />
       <button class="mini" title="重新扫描本机 CLI" @click="refreshAgents">⟳</button>
     </div>
 
     <div class="list">
       <div class="list-label">
-        <span>BOT 团队</span><span class="count">{{filtered.length}}</span>
+        <span>会话</span><span class="count">{{filtered.length}}</span>
+        <button class="mini" title="新建群聊" @click="openGroupNew">👥</button>
       </div>
 
-      <div v-for="b in filtered" :key="b.id" class="row" :class="{active: b.id===activeId}" @click="select(b.id)">
-        <div class="avatar" :style="avatarStyle(b)">
-          <span>{{b.emoji}}</span>
-          <i v-if="running[b.id]" class="pulse"></i>
+      <div v-for="c in filtered" :key="c.id" class="row" :class="{active: c.id===activeId}" @click="select(c.id)">
+        <div class="avatar" :style="avatarStyle(c)">
+          <span>{{c.emoji}}</span>
+          <span v-if="c.kind==='group'" class="member-count">{{c.members.length}}</span>
+          <i v-if="isBusy(c.id)" class="pulse"></i>
         </div>
         <div class="row-main">
           <div class="row-top">
-            <span class="row-name">{{b.name}}</span>
-            <span class="row-time">{{ago(b.updatedAt)}}</span>
+            <span class="row-name">{{c.name}}</span>
+            <span class="row-time">{{ago(c.updatedAt)}}</span>
           </div>
-          <div class="row-sub">{{b.preview || agentOf(b)?.name}}</div>
+          <div class="row-sub">{{c.preview || (c.kind === 'group' ? c.members.map(m=>m.name).join('、') : agentOf(c)?.name)}}</div>
         </div>
       </div>
 
       <div v-if="!filtered.length" class="list-empty">
-        {{bots.length ? '没有匹配的 Bot' : '还没有 Bot，点右上角 ＋ 建一个'}}
+        {{bots.length || groups.length ? '没有匹配的会话' : '还没有 Bot，点右上角 ＋ 建一个'}}
       </div>
     </div>
 
@@ -61,7 +63,7 @@
       <div class="me">
         <div class="avatar small">🦉</div>
         <div class="me-main"><b>本地工作区</b><small>{{runningCount ? runningCount + ' 个 Bot 在跑' : '空闲'}}</small></div>
-        <button class="mini" title="设置" @click="openNew()">＋</button>
+        <button class="mini" title="新建 Bot" @click="openNew()">＋</button>
       </div>
     </div>
   </aside>
@@ -73,10 +75,24 @@
       <div class="head-main">
         <div class="head-title">
           {{active.name}}
-          <span class="badge" :style="{borderColor: active.color+'55', color: active.color}">{{agentOf(active)?.name}}</span>
-          <span v-if="agentOf(active)?.installed" class="badge ghost">{{verLabel(agentOf(active))}}</span>
+          <template v-if="active.kind==='group'">
+            <span class="badge group">群聊 · {{active.members.length}} 个 Bot</span>
+          </template>
+          <template v-else>
+            <span class="badge" :style="{borderColor: active.color+'55', color: active.color}">{{agentOf(active)?.name}}</span>
+            <span v-if="agentOf(active)?.installed" class="badge ghost">{{verLabel(agentOf(active))}}</span>
+          </template>
         </div>
-        <div class="head-sub">
+        <div class="head-sub" v-if="active.kind==='group'">
+          <span class="member-line">
+            <span v-for="m in active.members" :key="m.id" class="mini-avatar" :style="avatarStyle(m)" :title="m.name">{{m.emoji}}</span>
+          </span>
+          <span class="sep">·</span>
+          <span class="path" @click="openFolder(active)">{{active.cwd || '跟随各 Bot 的目录'}}</span>
+          <span class="sep">·</span>
+          <span>@ 谁谁回答，回答里 @ 别人即交班</span>
+        </div>
+        <div class="head-sub" v-else>
           <span class="path" @click="openFolder(active)">{{active.cwd || '默认目录'}}</span>
           <span class="sep">·</span>
           <span>{{permLabel(active.permission)}}</span>
@@ -85,8 +101,13 @@
         </div>
       </div>
       <div class="head-actions">
-        <button class="ghost-btn" @click="openTerm('login')">登录 / 终端</button>
-        <button class="ghost-btn" @click="openEdit(active)">设置</button>
+        <template v-if="active.kind==='group'">
+          <button class="ghost-btn" @click="openGroupEdit(active)">成员</button>
+        </template>
+        <template v-else>
+          <button class="ghost-btn" @click="openTerm('login')">登录 / 终端</button>
+          <button class="ghost-btn" @click="openEdit(active)">设置</button>
+        </template>
         <button class="ghost-btn" @click="clearChat">清空</button>
       </div>
     </header>
@@ -99,6 +120,7 @@
         <p>每个 Bot 绑定本机一个 AI CLI，拥有自己的工作目录和记忆。<br/>像给同事派活一样派任务，多个 Bot 可以同时干活。</p>
         <div class="hero-cta">
           <button class="primary big" @click="openNew()">＋ 新建一个 Bot</button>
+          <button class="ghost-btn big" @click="openGroupNew">👥 新建群聊</button>
           <button class="ghost-btn big" @click="refreshAgents">重新扫描本机 CLI</button>
         </div>
         <div class="hero-grid">
@@ -112,7 +134,18 @@
 
       <!-- 消息 -->
       <template v-else>
-        <div v-if="!messages.length" class="chat-empty">
+        <div v-if="!messages.length && active.kind==='group'" class="chat-empty">
+          <div class="ce-avatar" :style="avatarStyle(active)">{{active.emoji}}</div>
+          <div class="ce-title">{{active.name}}</div>
+          <p>
+            <span v-for="m in active.members" :key="m.id" class="ce-member">{{m.emoji}} {{m.name}}</span>
+          </p>
+          <p>直接说需求，默认由「{{leaderName}}」先接；想指定人就 @ 它，回答里 @ 别人即自动交班。</p>
+          <div class="ce-chips">
+            <button v-for="m in active.members.slice(0,4)" :key="m.id" @click="useStarter('@' + m.name + ' ')">@{{m.name}} 先看一下</button>
+          </div>
+        </div>
+        <div v-else-if="!messages.length" class="chat-empty">
           <div class="ce-avatar" :style="avatarStyle(active)">{{active.emoji}}</div>
           <div class="ce-title">{{active.name}} 准备好了</div>
           <p>它在 <b>{{shortPath(active.cwd)}}</b> 里干活，用的是 {{agentOf(active)?.name}}{{agentOf(active)?.version ? ' v'+agentOf(active).version : ''}}</p>
@@ -123,12 +156,15 @@
         <div v-else class="dayline"><span>{{active.name}} 的会话</span></div>
 
         <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
-          <div v-if="m.role==='user'" class="bubble user-bubble">{{m.parts[0].text}}</div>
+          <div v-if="m.role==='system'" class="sys-note">{{m.parts[0].text}}</div>
+
+          <div v-else-if="m.role==='user'" class="bubble user-bubble" v-html="renderUserText(m.parts[0].text)"></div>
 
           <div v-else class="assistant">
             <div class="as-head">
-              <div class="avatar tiny" :style="avatarStyle(active)"><span>{{active.emoji}}</span></div>
-              <span class="as-name">{{active.name}}</span>
+              <div class="avatar tiny" :style="avatarStyle(senderOf(m))"><span>{{senderOf(m).emoji}}</span></div>
+              <span class="as-name">{{senderOf(m).name}}</span>
+              <span v-if="m.sender" class="as-cli">{{agentNameOf(m.sender)}}</span>
               <span v-if="m.status==='streaming'" class="typing"><i></i><i></i><i></i></span>
             </div>
 
@@ -160,8 +196,8 @@
               </template>
 
               <div v-if="m.meta?.authError" class="auth-tip">
-                <span>{{agentOf(active)?.name}} 还没登录，可以直接在窗口里完成授权。</span>
-                <button class="primary small" @click="openTerm('login')">在窗口内登录</button>
+                <span>{{m.sender ? m.sender.name : agentOf(active)?.name}} 还没登录，可以直接在窗口里完成授权。</span>
+                <button class="primary small" @click="openTermFor(m)">在窗口内登录</button>
               </div>
 
               <div v-if="m.status!=='streaming'" class="as-foot">
@@ -196,22 +232,36 @@
 
     <!-- 输入框 -->
     <footer v-if="active" class="composer">
-      <div class="composer-box" :class="{busy: running[active.id]}">
+      <!-- @ 成员选择 -->
+      <div v-if="mention.open && mention.list.length" class="mention-pop">
+        <div v-for="(m, i) in mention.list" :key="m.id" class="mention-item" :class="{on: i===mention.index}" @mousedown.prevent="applyMention(m)">
+          <span class="mi-emoji">{{m.emoji}}</span>
+          <span class="mi-name">{{m.name}}</span>
+          <span class="mi-cli">{{agentNameOf(m)}}</span>
+        </div>
+      </div>
+
+      <div class="composer-box" :class="{busy: isBusy(active.id)}">
         <textarea
           ref="ta"
           v-model="draft"
-          :placeholder="running[active.id] ? '正在干活，可以先去别的 Bot 看看…' : '给 ' + active.name + ' 派个活，Enter 发送'"
+          :placeholder="placeholder"
           rows="1"
-          @input="autoGrow"
+          @input="onDraftInput"
           @keydown="onKey"
         ></textarea>
         <div class="composer-bar">
-          <div class="chips">
+          <div class="chips" v-if="active.kind==='group'">
+            <span class="chip" @click="openGroupEdit(active)">👥 {{active.members.length}} 个成员</span>
+            <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
+            <span class="chip hint-chip">@ 指定谁回答</span>
+          </div>
+          <div class="chips" v-else>
             <span class="chip" @click="openEdit(active)">🧠 {{active.model || '默认模型'}}</span>
             <span class="chip" @click="openEdit(active)">🛡 {{permLabel(active.permission)}}</span>
             <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
           </div>
-          <button v-if="running[active.id]" class="send stop" @click="stop" title="停止">
+          <button v-if="isBusy(active.id)" class="send stop" @click="stop" title="停止">
             <span class="square"></span>
           </button>
           <button v-else class="send" :disabled="!draft.trim()" @click="send" title="发送">
@@ -219,12 +269,13 @@
           </button>
         </div>
       </div>
-      <div class="composer-hint">Enter 发送 · Shift+Enter 换行 · 任务在本机 CLI 里真实执行</div>
+      <div class="composer-hint" v-if="active.kind==='group'">Enter 发送 · @ 指定回答者 · 回答里 @ 别人会自动交班</div>
+      <div class="composer-hint" v-else>Enter 发送 · Shift+Enter 换行 · 任务在本机 CLI 里真实执行</div>
     </footer>
   </main>
 
   <!-- ============ 新建 / 编辑 Bot ============ -->
-  <div v-if="modal" class="modal-wrap" @click.self="modal=null">
+  <div v-if="modal==='new' || modal==='edit'" class="modal-wrap" @click.self="modal=null">
     <div class="modal" :class="{wide: modal==='new'}">
       <header class="modal-head">
         <div>
@@ -312,6 +363,67 @@
             <span class="spacer"></span>
             <button class="ghost-btn" @click="modal=null">取消</button>
             <button class="primary" :disabled="!canSave" @click="save">{{modal==='new' ? '创建并开始' : '保存'}}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- ============ 群聊 ============ -->
+  <div v-if="modal==='group'" class="modal-wrap" @click.self="modal=null">
+    <div class="modal">
+      <header class="modal-head">
+        <div>
+          <h2>{{groupForm.id ? '群聊设置' : '新建群聊'}}</h2>
+          <p>把几个 Bot 放进一个房间，@ 谁谁回答，回答里 @ 别人就自动交班</p>
+        </div>
+        <button class="icon-btn" @click="modal=null">✕</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="form-col">
+          <div class="field-row">
+            <label class="field">
+              <span>群名</span>
+              <input v-model="groupForm.name" placeholder="比如：上线指挥部" />
+            </label>
+            <label class="field">
+              <span>工作目录 <em>可选，留空跟随各 Bot</em></span>
+              <div class="input-row">
+                <input v-model="groupForm.cwd" placeholder="跟随各 Bot" />
+                <button class="ghost-btn" @click="pickGroupDir">选择</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="field">
+            <span>成员 <em>至少一个，点选加入</em></span>
+            <div class="member-pick">
+              <div v-for="b in bots" :key="b.id" class="member-card" :class="{sel: groupForm.memberIds.includes(b.id)}"
+                   @click="toggleMember(b.id)">
+                <span class="mc-emoji" :style="avatarStyle(b)">{{b.emoji}}</span>
+                <span class="mc-name">{{b.name}}</span>
+                <span class="mc-cli">{{agentNameOf(b)}}</span>
+                <span class="mc-check">{{groupForm.memberIds.includes(b.id) ? '✓' : ''}}</span>
+              </div>
+              <div v-if="!bots.length" class="member-empty">还没有 Bot，先去建几个</div>
+            </div>
+          </div>
+
+          <div class="field" v-if="groupForm.memberIds.length">
+            <span>负责人 <em>没人被 @ 时由谁先接</em></span>
+            <div class="seg">
+              <button v-for="b in groupForm.memberIds.map(id => bots.find(x => x.id === id)).filter(Boolean)"
+                      :key="b.id" :class="{on: groupForm.leaderId===b.id}" @click="groupForm.leaderId=b.id">
+                {{b.emoji}} {{b.name}}
+              </button>
+            </div>
+          </div>
+
+          <div class="form-foot">
+            <button v-if="groupForm.id" class="danger-btn" @click="removeGroup">解散群聊</button>
+            <span class="spacer"></span>
+            <button class="ghost-btn" @click="modal=null">取消</button>
+            <button class="primary" :disabled="!canSaveGroup" @click="saveGroup">{{groupForm.id ? '保存' : '创建群聊'}}</button>
           </div>
         </div>
       </div>

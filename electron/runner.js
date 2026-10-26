@@ -127,20 +127,25 @@ class Runner {
     this.running = new Map(); // botId -> { child, msg, timer, stderr }
   }
 
-  isRunning(botId) {
-    return this.running.has(botId);
+  isRunning(key) {
+    return this.running.has(key);
   }
 
-  stop(botId) {
-    const ctx = this.running.get(botId);
+  stop(key) {
+    const ctx = this.running.get(key);
     if (!ctx) return false;
     ctx.stopped = true;
     killTree(ctx.child);
     return true;
   }
 
-  run(bot, agent, prompt) {
-    if (this.running.has(bot.id)) return { ok: false, error: '这个 Bot 正在执行上一条任务' };
+  /**
+   * @param target {id, cwd, model, permission, systemPrompt, sessionId}
+   * @param opts   {key, sender}  key 决定会话归属（Bot 用 bot.id，群聊用 gid:botId）
+   */
+  run(target, agent, prompt, opts = {}) {
+    const key = opts.key || target.id;
+    if (this.running.has(key)) return { ok: false, error: '正在执行上一条任务' };
     if (!agent) return { ok: false, error: '找不到对应的 CLI 配置' };
 
     const resolved = resolveBin(agent.bin);
@@ -148,19 +153,23 @@ class Runner {
       return { ok: false, error: `本机没有找到 ${agent.name}（${agent.bin}），请先安装或检查 PATH` };
     }
 
-    const cwd = bot.cwd && fs.existsSync(bot.cwd) ? bot.cwd : os.homedir();
+    const cwd = target.cwd && fs.existsSync(target.cwd) ? target.cwd : os.homedir();
     const inv = buildInvocation(agent, {
       prompt,
-      sessionId: bot.sessionId,
-      resume: !!bot.sessionId,
-      model: bot.model,
-      permission: bot.permission,
-      systemPrompt: bot.systemPrompt,
+      sessionId: target.sessionId,
+      resume: !!target.sessionId,
+      model: target.model,
+      permission: target.permission,
+      systemPrompt: target.systemPrompt,
     });
 
     const msg = newMessage();
-    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false };
-    const sink = this.makeSink(bot, msg, ctx);
+    if (opts.sender) msg.sender = opts.sender;
+    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false, key };
+    let doneResolve;
+    ctx.done = new Promise((r) => (doneResolve = r));
+    ctx.resolveDone = () => doneResolve(msg);
+    const sink = this.makeSink(key, msg, ctx);
 
     let child;
     try {
@@ -169,8 +178,8 @@ class Runner {
       return { ok: false, error: `启动失败：${e.message}` };
     }
     ctx.child = child;
-    this.running.set(bot.id, ctx);
-    this.emit('run:start', { botId: bot.id, msgId: msg.id });
+    this.running.set(key, ctx);
+    this.emit('run:start', { key, msgId: msg.id });
 
     const parser = createParser(inv.proto, sink);
 
@@ -189,7 +198,7 @@ class Runner {
           }
         }
       }
-      this.flush(bot, ctx);
+      this.flush(key, ctx);
     });
 
     child.stderr.on('data', (chunk) => {
@@ -200,7 +209,7 @@ class Runner {
 
     child.on('error', (err) => {
       sink.error(`启动失败：${err.message}`);
-      this.finish(bot, ctx, 1);
+      this.finish(key, ctx, 1);
     });
 
     child.on('close', (code) => {
@@ -210,7 +219,7 @@ class Runner {
         } catch {}
         buf = '';
       }
-      this.finish(bot, ctx, code);
+      this.finish(key, ctx, code);
     });
 
     if (inv.stdin != null) {
@@ -224,12 +233,12 @@ class Runner {
       } catch {}
     }
 
-    return { ok: true, msg };
+    return { ok: true, msg, done: ctx.done };
   }
 
-  makeSink(bot, msg, ctx) {
+  makeSink(key, msg, ctx) {
     const last = (type) => (msg.parts.length && msg.parts[msg.parts.length - 1].type === type ? msg.parts[msg.parts.length - 1] : null);
-    const emitMsg = () => this.emit('run:msg', { botId: bot.id, msg });
+    const emitMsg = () => this.emit('run:msg', { key, msg });
 
     return {
       text: (delta) => {
@@ -291,7 +300,7 @@ class Runner {
       session: (sid) => {
         if (!sid) return;
         msg.sessionId = sid;
-        this.onSession(bot.id, sid);
+        this.onSession(key, sid);
       },
       meta: (obj) => {
         msg.meta = msg.meta || {};
@@ -311,15 +320,15 @@ class Runner {
     };
   }
 
-  flush(bot, ctx) {
+  flush(key, ctx) {
     if (!ctx.dirty) return;
     ctx.dirty = false;
-    this.emit('run:msg', { botId: bot.id, msg: ctx.msg });
+    this.emit('run:msg', { key, msg: ctx.msg });
   }
 
-  finish(bot, ctx, code) {
+  finish(key, ctx, code) {
     const msg = ctx.msg;
-    this.running.delete(bot.id);
+    this.running.delete(key);
 
     const errText = stripAnsi(ctx.stderr.join('')).trim();
     if (!msg.error && code !== 0 && !ctx.stopped) {
@@ -343,8 +352,9 @@ class Runner {
     msg.finishedAt = Date.now();
     msg.duration = msg.finishedAt - msg.createdAt;
 
-    this.onMessage(bot.id, msg);
-    this.emit('run:done', { botId: bot.id, msg });
+    this.onMessage(key, msg);
+    this.emit('run:done', { key, msg });
+    if (ctx.resolveDone) ctx.resolveDone();
   }
 }
 
