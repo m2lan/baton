@@ -29,8 +29,6 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # Intel 那一条默认跳过；tag 触发时 inputs 为空，同样跳过
-    if: ${{ !matrix.optional || inputs.build_intel }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,16 +53,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        if: ${{ !matrix.optional || inputs.build_intel == true }}
 
       - uses: actions/setup-node@v4
+        if: ${{ !matrix.optional || inputs.build_intel == true }}
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
+        if: ${{ !matrix.optional || inputs.build_intel == true }}
         run: npm ci
 
       - name: Build
+        if: ${{ !matrix.optional || inputs.build_intel == true }}
         shell: bash
         env:
           # 打 tag 才发布；手动触发默认只出包
@@ -82,6 +84,7 @@ jobs:
 
       # 无论是否发布，都留一份构建产物，方便排查
       - uses: actions/upload-artifact@v4
+        if: ${{ !matrix.optional || inputs.build_intel == true }}
         with:
           name: baton-${{ matrix.name }}
           path: |
