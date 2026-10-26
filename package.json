@@ -1,0 +1,19 @@
+{
+  "name": "localbot",
+  "productName": "LocalBot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "把本机安装的 AI CLI 变成一支 Bot 团队（Grok Bot 思路的本地版）",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.18",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^33.4.11",
+    "vue": "^3.5.44"
+  }
+}

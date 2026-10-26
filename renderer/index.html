@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>LocalBot</title>
+  <link rel="stylesheet" href="vendor/xterm.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" @click.self="closeModals">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◈</div>
+      <div class="brand-text">
+        <b>LocalBot</b>
+        <small>本机 CLI 团队 · {{installedCount}}/{{agents.length}}</small>
+      </div>
+      <button class="icon-btn new" title="新建 Bot" @click="openNew">＋</button>
+    </div>
+
+    <div class="search">
+      <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input v-model="query" placeholder="搜索 Bot" />
+      <button class="mini" title="重新扫描本机 CLI" @click="refreshAgents">⟳</button>
+    </div>
+
+    <div class="list">
+      <div class="list-label">
+        <span>BOT 团队</span><span class="count">{{filtered.length}}</span>
+      </div>
+
+      <div v-for="b in filtered" :key="b.id" class="row" :class="{active: b.id===activeId}" @click="select(b.id)">
+        <div class="avatar" :style="avatarStyle(b)">
+          <span>{{b.emoji}}</span>
+          <i v-if="running[b.id]" class="pulse"></i>
+        </div>
+        <div class="row-main">
+          <div class="row-top">
+            <span class="row-name">{{b.name}}</span>
+            <span class="row-time">{{ago(b.updatedAt)}}</span>
+          </div>
+          <div class="row-sub">{{b.preview || agentOf(b)?.name}}</div>
+        </div>
+      </div>
+
+      <div v-if="!filtered.length" class="list-empty">
+        {{bots.length ? '没有匹配的 Bot' : '还没有 Bot，点右上角 ＋ 建一个'}}
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <div class="env">
+        <div class="env-top">
+          <span class="dot-ok"></span> 本机 CLI
+          <b>{{installedCount}}/{{agents.length}}</b> 可用
+          <button class="mini env-refresh" title="重新扫描" @click="refreshAgents">刷新</button>
+        </div>
+      </div>
+      <div class="me">
+        <div class="avatar small">🦉</div>
+        <div class="me-main"><b>本地工作区</b><small>{{runningCount ? runningCount + ' 个 Bot 在跑' : '空闲'}}</small></div>
+        <button class="mini" title="设置" @click="openNew()">＋</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+    <header v-if="active" class="head">
+      <div class="avatar" :style="avatarStyle(active)"><span>{{active.emoji}}</span></div>
+      <div class="head-main">
+        <div class="head-title">
+          {{active.name}}
+          <span class="badge" :style="{borderColor: active.color+'55', color: active.color}">{{agentOf(active)?.name}}</span>
+          <span v-if="agentOf(active)?.installed" class="badge ghost">{{verLabel(agentOf(active))}}</span>
+        </div>
+        <div class="head-sub">
+          <span class="path" @click="openFolder(active)">{{active.cwd || '默认目录'}}</span>
+          <span class="sep">·</span>
+          <span>{{permLabel(active.permission)}}</span>
+          <span v-if="active.sessionId" class="sep">·</span>
+          <span v-if="active.sessionId">会话 {{active.sessionId.slice(0,8)}}</span>
+        </div>
+      </div>
+      <div class="head-actions">
+        <button class="ghost-btn" @click="openTerm('login')">登录 / 终端</button>
+        <button class="ghost-btn" @click="openEdit(active)">设置</button>
+        <button class="ghost-btn" @click="clearChat">清空</button>
+      </div>
+    </header>
+
+    <section class="stream" ref="stream" @scroll="onScroll">
+      <!-- 空态 -->
+      <div v-if="!active" class="hero">
+        <div class="hero-badge">本机已安装 {{installedCount}} 个 AI CLI</div>
+        <h1>把你的 CLI，<span class="grad">变成一支 Bot 团队</span></h1>
+        <p>每个 Bot 绑定本机一个 AI CLI，拥有自己的工作目录和记忆。<br/>像给同事派活一样派任务，多个 Bot 可以同时干活。</p>
+        <div class="hero-cta">
+          <button class="primary big" @click="openNew()">＋ 新建一个 Bot</button>
+          <button class="ghost-btn big" @click="refreshAgents">重新扫描本机 CLI</button>
+        </div>
+        <div class="hero-grid">
+          <button v-for="a in agents" :key="a.id" class="hero-card" :class="{off:!a.installed}" @click="openNew(a.id)">
+            <span class="hc-emoji">{{a.emoji}}</span>
+            <span class="hc-name">{{a.name}}</span>
+            <span class="hc-tag">{{a.installed ? verLabel(a) : '未安装 · 点击安装'}}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 消息 -->
+      <template v-else>
+        <div v-if="!messages.length" class="chat-empty">
+          <div class="ce-avatar" :style="avatarStyle(active)">{{active.emoji}}</div>
+          <div class="ce-title">{{active.name}} 准备好了</div>
+          <p>它在 <b>{{shortPath(active.cwd)}}</b> 里干活，用的是 {{agentOf(active)?.name}}{{agentOf(active)?.version ? ' v'+agentOf(active).version : ''}}</p>
+          <div class="ce-chips">
+            <button v-for="s in starters" :key="s" @click="useStarter(s)">{{s}}</button>
+          </div>
+        </div>
+        <div v-else class="dayline"><span>{{active.name}} 的会话</span></div>
+
+        <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+          <div v-if="m.role==='user'" class="bubble user-bubble">{{m.parts[0].text}}</div>
+
+          <div v-else class="assistant">
+            <div class="as-head">
+              <div class="avatar tiny" :style="avatarStyle(active)"><span>{{active.emoji}}</span></div>
+              <span class="as-name">{{active.name}}</span>
+              <span v-if="m.status==='streaming'" class="typing"><i></i><i></i><i></i></span>
+            </div>
+
+            <div class="as-body">
+              <template v-for="(p, i) in m.parts" :key="i">
+                <div v-if="p.type==='thinking'" class="thinking" :class="{open: openThink[m.id+'_'+i]}" @click="toggle('think', m.id, i)">
+                  <div class="think-head">
+                    <span class="think-ic">✳</span>
+                    <span>思考过程</span>
+                    <span class="think-more">{{openThink[m.id+'_'+i] ? '收起' : '展开'}}</span>
+                  </div>
+                  <div v-if="openThink[m.id+'_'+i]" class="think-body">{{p.text}}</div>
+                </div>
+
+                <div v-else-if="p.type==='tool'" class="tool" :class="p.status">
+                  <div class="tool-head" @click="toggle('tool', m.id, i)">
+                    <span class="tool-ic">🛠</span>
+                    <span class="tool-name">{{p.name}}</span>
+                    <span class="tool-preview">{{toolPreview(p)}}</span>
+                    <span class="tool-state">{{p.status==='running' ? '执行中' : p.status==='error' ? '失败' : '完成'}}</span>
+                  </div>
+                  <div v-if="openTool[m.id+'_'+i]" class="tool-body">
+                    <div v-if="p.input" class="tool-sec"><em>输入</em><pre>{{p.input}}</pre></div>
+                    <div v-if="p.result" class="tool-sec"><em>输出</em><pre>{{p.result}}</pre></div>
+                  </div>
+                </div>
+
+                <div v-else-if="p.type==='text'" class="md" v-html="render(p.text) + (m.status==='streaming' && i===m.parts.length-1 ? '<span class=\'caret\'></span>' : '')"></div>
+              </template>
+
+              <div v-if="m.meta?.authError" class="auth-tip">
+                <span>{{agentOf(active)?.name}} 还没登录，可以直接在窗口里完成授权。</span>
+                <button class="primary small" @click="openTerm('login')">在窗口内登录</button>
+              </div>
+
+              <div v-if="m.status!=='streaming'" class="as-foot">
+                <span v-if="m.meta?.model">{{shortModel(m.meta.model)}}</span>
+                <span v-if="m.duration">{{(m.duration/1000).toFixed(1)}}s</span>
+                <span v-if="m.meta?.cost">${{m.meta.cost.toFixed(4)}}</span>
+                <span v-if="m.meta?.stopped" class="warn">已手动停止</span>
+                <span v-if="m.status==='error'" class="err">执行失败</span>
+                <button class="link-btn" @click="copy(m)">复制</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- 内嵌终端 -->
+    <section v-if="term.open" class="term-sheet">
+      <header class="term-head">
+        <span class="term-dot"></span>
+        <b>{{term.title}}</b>
+        <span class="term-cwd">{{shortPath(term.cwd)}}</span>
+        <span class="term-hint" v-if="term.mode==='login'">在终端里完成授权，然后关掉面板重发消息</span>
+        <span class="term-hint err" v-if="term.err">{{term.err}}</span>
+        <button class="ghost-btn acc" v-if="term.slashLogin" @click="sendSlashLogin">输入 /login</button>
+        <button class="ghost-btn" @click="restartTerm">重启</button>
+        <button class="ghost-btn" @click="openTerminal(active, term.mode==='login')">系统终端</button>
+        <button class="icon-btn" @click="closeTerm">✕</button>
+      </header>
+      <div class="term-body" ref="termEl"></div>
+    </section>
+
+    <!-- 输入框 -->
+    <footer v-if="active" class="composer">
+      <div class="composer-box" :class="{busy: running[active.id]}">
+        <textarea
+          ref="ta"
+          v-model="draft"
+          :placeholder="running[active.id] ? '正在干活，可以先去别的 Bot 看看…' : '给 ' + active.name + ' 派个活，Enter 发送'"
+          rows="1"
+          @input="autoGrow"
+          @keydown="onKey"
+        ></textarea>
+        <div class="composer-bar">
+          <div class="chips">
+            <span class="chip" @click="openEdit(active)">🧠 {{active.model || '默认模型'}}</span>
+            <span class="chip" @click="openEdit(active)">🛡 {{permLabel(active.permission)}}</span>
+            <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
+          </div>
+          <button v-if="running[active.id]" class="send stop" @click="stop" title="停止">
+            <span class="square"></span>
+          </button>
+          <button v-else class="send" :disabled="!draft.trim()" @click="send" title="发送">
+            <svg viewBox="0 0 24 24" class="ico"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="composer-hint">Enter 发送 · Shift+Enter 换行 · 任务在本机 CLI 里真实执行</div>
+    </footer>
+  </main>
+
+  <!-- ============ 新建 / 编辑 Bot ============ -->
+  <div v-if="modal" class="modal-wrap" @click.self="modal=null">
+    <div class="modal" :class="{wide: modal==='new'}">
+      <header class="modal-head">
+        <div>
+          <h2>{{modal==='new' ? '新建 Bot' : 'Bot 设置'}}</h2>
+          <p>{{modal==='new' ? '选一个本机 CLI 作为它的“大脑”' : '调整这个 Bot 的工作方式'}}</p>
+        </div>
+        <button class="icon-btn" @click="modal=null">✕</button>
+      </header>
+
+      <div class="modal-body" :class="{two: modal==='new'}">
+        <div v-if="modal==='new'" class="cli-col">
+          <div class="col-label">已安装 <span>{{installedAgents.length}}</span></div>
+          <div class="cli-card" v-for="a in installedAgents" :key="a.id" :class="{sel: form.agentId===a.id}" @click="pickAgent(a)">
+            <span class="cc-emoji" :style="{background:a.color+'22'}">{{a.emoji}}</span>
+            <div class="cc-main">
+              <b>{{a.name}}</b>
+              <small>{{a.tag}}</small>
+            </div>
+            <span class="cc-ver">{{verLabel(a)}}</span>
+          </div>
+
+          <div class="col-label" style="margin-top:18px">可一键安装 <span>{{notInstalled.length}}</span></div>
+          <div class="cli-card" v-for="a in notInstalled" :key="a.id" :class="{sel: form.agentId===a.id, dim:true}" @click="pickAgent(a)">
+            <span class="cc-emoji" :style="{background:a.color+'22'}">{{a.emoji}}</span>
+            <div class="cc-main">
+              <b>{{a.name}}</b>
+              <small>{{a.installHint || a.tag}}</small>
+            </div>
+            <button v-if="a.installKind!=='manual'" class="install-btn" :disabled="!!installing[a.id]" @click.stop="install(a)">
+              {{installing[a.id] ? '安装中' : '安装'}}
+            </button>
+            <button v-else class="install-btn ghost" @click.stop="openExternal(a.docs)">官网</button>
+          </div>
+
+          <div v-if="installLog.length" class="install-log">
+            <div class="il-head">安装日志<button class="mini" @click="installLog=[]">清空</button></div>
+            <pre>{{installLog.join('\n')}}</pre>
+          </div>
+        </div>
+
+        <div class="form-col">
+          <div class="field-row">
+            <label class="field">
+              <span>名字</span>
+              <input v-model="form.name" placeholder="给它起个名字" />
+            </label>
+            <label class="field">
+              <span>模型 <em>留空用 CLI 默认</em></span>
+              <input v-model="form.model" :placeholder="selectedAgent?.models?.[0] || '默认'" list="model-list" />
+              <datalist id="model-list">
+                <option v-for="m in (selectedAgent?.models||[])" :key="m" :value="m"></option>
+              </datalist>
+            </label>
+          </div>
+
+          <div class="field">
+            <span>头像</span>
+            <div class="emoji-row">
+              <button v-for="e in emojiList" :key="e" class="emoji" :class="{sel: form.emoji===e}" @click="form.emoji=e">{{e}}</button>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>工作目录 <em>Bot 的所有文件操作都在这里</em></span>
+            <div class="input-row">
+              <input v-model="form.cwd" placeholder="默认：用户主目录" />
+              <button class="ghost-btn" @click="pickDir">选择</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>权限模式 <em>{{permTip}}</em></span>
+            <div class="seg">
+              <button v-for="p in perms" :key="p.v" :class="{on: form.permission===p.v}" @click="form.permission=p.v" :title="p.tip">{{p.label}}</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>角色设定 <em>可选，每轮都会带上</em></span>
+            <textarea v-model="form.systemPrompt" rows="2" placeholder="比如：你是我的后端架构师，回答尽量短，先给结论。"></textarea>
+          </label>
+
+          <div class="form-foot">
+            <button v-if="modal==='edit'" class="danger-btn" @click="removeBot">删除 Bot</button>
+            <span class="spacer"></span>
+            <button class="ghost-btn" @click="modal=null">取消</button>
+            <button class="primary" :disabled="!canSave" @click="save">{{modal==='new' ? '创建并开始' : '保存'}}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/vue.global.prod.js"></script>
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
