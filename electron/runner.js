@@ -2,14 +2,24 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { createParser, stripAnsi } = require('./parsers');
 const { buildInvocation } = require('./agents');
 
 const isWin = process.platform === 'win32';
 
 /* ---------------- 环境与可执行文件解析 ---------------- */
+let dirsCache = { at: 0, list: [] };
+
 function candidateDirs() {
+  // 目录列表会做一堆 existsSync，缓存起来，别每次找 bin 都重算
+  if (Date.now() - dirsCache.at < 30000 && dirsCache.list.length) return dirsCache.list;
+  const list = computeDirs();
+  dirsCache = { at: Date.now(), list };
+  return list;
+}
+
+function computeDirs() {
   const dirs = (process.env.PATH || '').split(isWin ? ';' : ':').filter(Boolean);
   const home = os.homedir();
   const extra = [
@@ -80,49 +90,6 @@ function killTree(child) {
     if (isWin) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
     else child.kill('SIGTERM');
   } catch {}
-}
-
-/* ---------------- 版本探测 ---------------- */
-function readVersion(bin) {
-  const resolved = resolveBin(bin);
-  if (!resolved) return null;
-  try {
-    const r = spawnSync(toCommandLine(resolved, ['--version']), {
-      shell: true,
-      encoding: 'utf8',
-      timeout: 12000,
-      windowsHide: true,
-      input: '',
-    });
-    const out = stripAnsi(`${r.stdout || ''}${r.stderr || ''}`).trim();
-    const m = out.match(/\d+\.\d+(\.\d+)?[-\w.]*/);
-    return m ? m[0] : out.split(/\r?\n/)[0].slice(0, 40) || 'installed';
-  } catch {
-    return 'installed';
-  }
-}
-
-function detectAgents(catalog) {
-  return catalog.map((a) => {
-    const p = resolveBin(a.bin);
-    return {
-      id: a.id,
-      name: a.name,
-      emoji: a.emoji,
-      color: a.color,
-      tag: a.tag,
-      desc: a.desc,
-      docs: a.docs,
-      installKind: a.install && a.install.kind,
-      installHint: a.install && (a.install.hint || a.install.pkg || a.install.cmd),
-      models: a.models || [],
-      session: !!a.session,
-      permission: !!a.permission,
-      installed: !!p,
-      path: p || '',
-      version: p ? readVersion(a.bin) : '',
-    };
-  });
 }
 
 /* ---------------- 消息组装 ---------------- */
@@ -381,4 +348,4 @@ class Runner {
   }
 }
 
-module.exports = { Runner, detectAgents, resolveBin, spawnCli, buildEnv, killTree };
+module.exports = { Runner, resolveBin, spawnCli, buildEnv, killTree, toCommandLine };

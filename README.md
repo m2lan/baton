@@ -31,6 +31,7 @@ Windows 上也可以直接双击 **`start.bat`**（会自动装依赖）。
 | 角色设定 | 每轮自动注入，用来固定人设/分工 |
 | 权限模式 | 自动 / 谨慎 / 只读，映射到各 CLI 自己的权限参数 |
 | 一键安装 | 没装的 CLI 在弹窗里点"安装"就装（npm / 官方脚本），日志实时回显 |
+| 秒开 | 启动只做 PATH 查找（~60ms）先出界面，版本号缓存到磁盘并后台并发补齐（第一次约 2.5s，之后 ~60ms） |
 | 窗口内登录 | 底部内嵌真终端（node-pty + xterm.js），CLI 的交互式授权直接在应用里完成，不用跳外部终端 |
 
 ## 已内置的 CLI
@@ -90,6 +91,19 @@ scripts/
 ```
 
 数据存在 `%APPDATA%\LocalBot\data\`（macOS/Linux 在对应 userData 目录），删掉即重置。
+
+## 启动为什么会快
+
+`electron/detect.js` 分两步：
+
+1. **fast()** —— 只判断「装没装」+ 读 `agents-cache.json` 里的版本号，同步返回，窗口立刻可用。
+2. **full()** —— 后台并发（4 路）跑 `<cli> --version`，每探到一个就推一次 `agents:update` 让界面自己更新；结果按「路径 + 文件 mtime」缓存，CLI 没升级就不会重复探。
+
+想看耗时：
+
+```bash
+node scripts/bench-detect.js
+```
 
 ## 排错
 

@@ -4,7 +4,8 @@ const fs = require('fs');
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, screen } = require('electron');
 const { CATALOG, getAgent } = require('./agents');
 const store = require('./store');
-const { Runner, detectAgents, spawnCli, resolveBin, killTree } = require('./runner');
+const { Runner, spawnCli, resolveBin, killTree } = require('./runner');
+const { Detector } = require('./detect');
 const terminal = require('./pty');
 
 const SHOT = (process.argv.find((a) => a.startsWith('--shot=')) || '').split('=')[1] || null;
@@ -15,6 +16,9 @@ const WIN_SIZE = ((process.argv.find((a) => a.startsWith('--win-size=')) || '').
 let win = null;
 let state = { bots: [], settings: {} };
 let agentCache = [];
+let detector = null;
+const getDetector = () =>
+  (detector ||= new Detector({ cacheFile: path.join(app.getPath('userData'), 'data', 'agents-cache.json') }));
 
 /* ---------------- 事件发送 ---------------- */
 function emit(channel, payload) {
@@ -95,7 +99,8 @@ function installAgent(agentId) {
   child.on('close', async (code) => {
     installing = null;
     emit('install:log', { agentId, line: code === 0 ? '✓ 安装完成' : `✗ 安装结束（退出码 ${code}）`, done: true, code });
-    agentCache = detectAgents(CATALOG);
+    getDetector().invalidate(agentId);
+    agentCache = await getDetector().full(CATALOG);
     emit('agents:update', agentCache);
   });
   return { ok: true };
@@ -128,12 +133,26 @@ const runner = new Runner({
 function registerIpc() {
   ipcMain.handle('app:init', () => {
     state = store.loadState();
-    if (!agentCache.length) agentCache = detectAgents(CATALOG);
+    if (!agentCache.length) {
+      // 先用「装没装 + 缓存版本」瞬间返回，版本号后台补
+      agentCache = getDetector().fast(CATALOG);
+      getDetector()
+        .full(CATALOG, (partial) => {
+          agentCache = partial;
+          emit('agents:update', partial);
+        })
+        .then((list) => {
+          agentCache = list;
+          emit('agents:update', list);
+        })
+        .catch(() => {});
+    }
     return { bots: state.bots, settings: state.settings, agents: agentCache, catalog: CATALOG.length };
   });
 
-  ipcMain.handle('agents:detect', () => {
-    agentCache = detectAgents(CATALOG);
+  ipcMain.handle('agents:detect', async () => {
+    agentCache = await getDetector().full(CATALOG);
+    emit('agents:update', agentCache);
     return agentCache;
   });
 
