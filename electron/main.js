@@ -7,6 +7,7 @@ const store = require('./store');
 const { Runner, spawnCli, resolveBin, killTree } = require('./runner');
 const { Detector } = require('./detect');
 const terminal = require('./pty');
+const netCfg = require('./net');
 const { Room, findMentions } = require('./room');
 
 const SHOT = (process.argv.find((a) => a.startsWith('--shot=')) || '').split('=')[1] || null;
@@ -205,6 +206,7 @@ const room = new Room({
 function registerIpc() {
   ipcMain.handle('app:init', () => {
     state = store.loadState();
+    netCfg.setConfig(state.settings.proxy || { mode: 'direct', url: '' });
     if (!agentCache.length) {
       // 先用「装没装 + 缓存版本」瞬间返回，版本号后台补
       agentCache = getDetector().fast(CATALOG);
@@ -293,7 +295,7 @@ function registerIpc() {
   });
   ipcMain.handle('chat:stop', (_e, key) => (isGroupKey(key) ? room.stop(key) : runner.stop(key)));
 
-  ipcMain.handle('chat:send', (_e, payload) => {
+  ipcMain.handle('chat:send', async (_e, payload) => {
     const key = payload.key || payload.botId;
     const text = payload.text;
 
@@ -331,7 +333,7 @@ function registerIpc() {
     bot.preview = text.slice(0, 60);
     persist();
 
-    const r = runner.run(bot, agent, text, { key });
+    const r = await runner.run(bot, agent, text, { key });
     if (!r.ok) {
       const errMsg = {
         id: `m_${Date.now().toString(36)}err`,
@@ -374,11 +376,11 @@ function registerIpc() {
   });
 
   /* ---------- 内嵌终端 ---------- */
-  ipcMain.handle('pty:open', (_e, { botId, mode, cols, rows }) => {
+  ipcMain.handle('pty:open', async (_e, { botId, mode, cols, rows }) => {
     const bot = state.bots.find((b) => b.id === botId);
     const agent = bot && getAgent(bot.agentId);
     try {
-      const r = terminal.open({ botId, bot, agent, mode: mode === 'shell' ? 'shell' : 'login', cols, rows });
+      const r = await terminal.open({ botId, bot, agent, mode: mode === 'shell' ? 'shell' : 'login', cols, rows });
       terminal.bind(
         r.id,
         (id, data) => emit('pty:data', { id, data }),
@@ -404,9 +406,12 @@ function registerIpc() {
 
   ipcMain.handle('settings:save', (_e, patch) => {
     state.settings = { ...state.settings, ...patch };
+    if (state.settings.proxy) netCfg.setConfig(state.settings.proxy);
     persist();
     return state.settings;
   });
+
+  ipcMain.handle('net:diagnose', async () => netCfg.diagnose());
 }
 
 /* ---------------- 窗口 ---------------- */

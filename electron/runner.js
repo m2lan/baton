@@ -3,8 +3,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const net = require('net');
 const { createParser, stripAnsi } = require('./parsers');
 const { buildInvocation } = require('./agents');
+const proxy = require('./net');
 
 const isWin = process.platform === 'win32';
 
@@ -35,12 +37,22 @@ function computeDirs() {
   return [...new Set([...dirs, ...extra])];
 }
 
-function buildEnv() {
+/**
+ * @param opts.tty 交互式终端：不要塞 NO_COLOR / CI，否则 CLI 会以为自己在 CI 里直接退出
+ */
+function buildEnv(opts = {}) {
   const env = { ...process.env };
   env.PATH = candidateDirs().join(isWin ? ';' : ':');
-  env.FORCE_COLOR = '0';
-  env.NO_COLOR = '1';
-  env.CI = '0';
+  delete env.CI;
+  if (opts.tty) {
+    delete env.NO_COLOR;
+    delete env.FORCE_COLOR;
+  } else {
+    env.FORCE_COLOR = '0';
+    env.NO_COLOR = '1';
+  }
+  // 代理策略统一在这里处理：默认直连，避免继承到死代理导致 CLI TLS 失败
+  proxy.applyProxy(env);
   return env;
 }
 
@@ -96,6 +108,18 @@ function killTree(child) {
 const AUTH_HINT =
   /(authentication required|authentication fail|please use \/login|not logged in|not signed in|please (log|sign) in|set an auth method|invalid api key|unauthorized|401|no credentials|未登录|未授权|请先登录)/i;
 
+/** 找一个空闲的本地端口（有些 CLI 会监听固定端口，和宿主 app 打架） */
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(0));
+    srv.listen(0, '127.0.0.1', () => {
+      const p = (srv.address() || {}).port || 0;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
 /** 把 JSON 化的错误串压成一句人话 */
 function humanizeError(input) {
   let text = stripAnsi(String(input || '')).trim();
@@ -143,7 +167,7 @@ class Runner {
    * @param target {id, cwd, model, permission, systemPrompt, sessionId}
    * @param opts   {key, sender}  key 决定会话归属（Bot 用 bot.id，群聊用 gid:botId）
    */
-  run(target, agent, prompt, opts = {}) {
+  async run(target, agent, prompt, opts = {}) {
     const key = opts.key || target.id;
     if (this.running.has(key)) return { ok: false, error: '正在执行上一条任务' };
     if (!agent) return { ok: false, error: '找不到对应的 CLI 配置' };
@@ -162,6 +186,12 @@ class Runner {
       permission: target.permission,
       systemPrompt: target.systemPrompt,
     });
+
+    // 固定端口的 CLI（如 codebuddy 默认 61172）要和宿主 app 抢，这里换一个空闲的
+    if (agent.needsPort) {
+      const p = await freePort();
+      if (p) inv.args.push('--port', String(p));
+    }
 
     const msg = newMessage();
     if (opts.sender) msg.sender = opts.sender;

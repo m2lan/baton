@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('lb', {
   openFolder: (dir) => invoke('shell:openFolder', dir),
   openTerminal: (botId, login) => invoke('shell:terminal', botId, login),
   saveSettings: (patch) => invoke('settings:save', patch),
+  diagnose: () => invoke('net:diagnose'),
   ptyOpen: (botId, mode, cols, rows) => invoke('pty:open', { botId, mode, cols, rows }),
   ptyWrite: (id, data) => invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => invoke('pty:resize', id, cols, rows),

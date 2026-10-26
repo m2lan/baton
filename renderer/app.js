@@ -143,6 +143,10 @@ createApp({
     const agents = ref([]);
     const bots = ref([]);
     const groups = ref([]);
+    const settings = ref({});
+    const netForm = reactive({ mode: 'direct', url: '' });
+    const diag = ref(null);
+    const diagBusy = ref(false);
     const activeId = ref('');
     const chats = reactive({});
     const running = reactive({});
@@ -158,7 +162,8 @@ createApp({
     const stream = ref(null);
     const ta = ref(null);
     const termEl = ref(null);
-    const term = reactive({ open: false, id: '', title: '', cwd: '', mode: 'login', err: '', slashLogin: false });
+    const term = reactive({ open: false, id: '', title: '', cwd: '', mode: 'login', err: '', slashLogin: false, netHint: false });
+    let termOut = '';
     let xterm = null;
     let fitAddon = null;
     let termObserver = null;
@@ -206,6 +211,12 @@ createApp({
       if (a.kind === 'group') return '在群里说点什么，@ 某个 Bot 让它回答';
       return `给 ${a.name} 派个活，Enter 发送`;
     });
+    const netHint = computed(() => {
+      if (netForm.mode === 'direct') return '不继承系统代理。系统里配了 127.0.0.1 这类代理时，不少 CLI 的 TLS 会握手失败，默认直连最稳。';
+      if (netForm.mode === 'inherit') return '沿用启动本应用时环境里的 HTTP(S)_PROXY，代理挂了 CLI 就会连不上。';
+      return '所有 CLI 与终端都走这个代理，公司内网需要代理时用这个。';
+    });
+    const diagRows = computed(() => (diag.value && diag.value.results) || []);
     const canSaveGroup = computed(() => !!groupForm.name.trim() && groupForm.memberIds.length > 0);
     const installedAgents = computed(() => agents.value.filter((a) => a.installed));
     const notInstalled = computed(() => agents.value.filter((a) => !a.installed));
@@ -337,6 +348,9 @@ createApp({
     async function boot() {
       const data = await window.lb.init();
       agents.value = data.agents || [];
+      settings.value = data.settings || {};
+      netForm.mode = (settings.value.proxy && settings.value.proxy.mode) || 'direct';
+      netForm.url = (settings.value.proxy && settings.value.proxy.url) || '';
       bots.value = data.bots || [];
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
@@ -362,10 +376,28 @@ createApp({
           agents.value = payload || [];
           for (const a of agents.value) if (a.installed) delete installing[a.id];
         } else if (channel === 'pty:data') {
-          if (payload.id === term.id && xterm) xterm.write(payload.data);
+          if (payload.id === term.id && xterm) {
+            termOut += payload.data;
+            xterm.write(payload.data);
+            if (/TLS connection|socket disconnected|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|network error|ECONNREFUSED/i.test(payload.data)) {
+              term.netHint = true;
+            }
+          }
         } else if (channel === 'pty:exit') {
           if (payload.id === term.id && xterm) {
+            const plain = termOut.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
             xterm.write('\r\n\x1b[38;5;243m[进程已退出，点「重启」可再来一次]\x1b[0m\r\n');
+            if (/EADDRINUSE|address already in use/i.test(plain)) {
+              xterm.write(
+                '\x1b[33m提示：本地端口 61172 被别的程序占着（通常是 WorkBuddy / CodeBuddy 桌面版正在后台跑）。\r\n' +
+                '可以关掉那个程序后点「重启」，或者点右上角「系统终端」到外面去登录。\x1b[0m\r\n'
+              );
+            } else if (!plain) {
+              xterm.write(
+                '\x1b[33m提示：它没输出就退出了，通常是本地守护端口被占用（61172）。\r\n' +
+                '关掉 WorkBuddy / CodeBuddy 桌面版后点「重启」，或改用「系统终端」。\x1b[0m\r\n'
+              );
+            }
           }
         } else if (channel === 'install:log') {
           if (payload.line) installLog.value.push(payload.line);
@@ -529,6 +561,38 @@ createApp({
       if (b) { b.sessionId = ''; b.preview = ''; }
       const g = groups.value.find((x) => x.id === active.value.id);
       if (g) { g.sessions = {}; g.preview = ''; }
+    }
+
+    /* -------- 设置 / 网络 -------- */
+    function openSettings() {
+      netForm.mode = (settings.value.proxy && settings.value.proxy.mode) || 'direct';
+      netForm.url = (settings.value.proxy && settings.value.proxy.url) || '';
+      diag.value = null;
+      modal.value = 'settings';
+    }
+
+    async function saveNet() {
+      const proxy = { mode: netForm.mode, url: netForm.url.trim() };
+      settings.value = (await window.lb.saveSettings({ proxy })) || settings.value;
+      modal.value = null;
+    }
+
+    async function runDiagnose() {
+      diagBusy.value = true;
+      try {
+        // 先把当前选择落盘，诊断才会测这一套
+        await window.lb.saveSettings({ proxy: { mode: netForm.mode, url: netForm.url.trim() } });
+        diag.value = await window.lb.diagnose();
+      } finally {
+        diagBusy.value = false;
+      }
+    }
+
+    async function useDirect() {
+      netForm.mode = 'direct';
+      settings.value = (await window.lb.saveSettings({ proxy: { mode: 'direct', url: netForm.url } })) || settings.value;
+      term.netHint = false;
+      restartTerm();
     }
 
     /* -------- 群聊 -------- */
@@ -743,6 +807,7 @@ createApp({
       if (!targetBotId) return;
       term.mode = mode === 'shell' ? 'shell' : 'login';
       term.err = '';
+      term.netHint = false;
       term.open = true;
       await nextTick();
       ensureXterm();
@@ -753,6 +818,7 @@ createApp({
         term.err = r.error;
         return;
       }
+      termOut = '';
       term.id = r.id;
       term.title = r.title;
       term.cwd = r.cwd;
@@ -817,6 +883,7 @@ createApp({
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
       saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
+      settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect,
     };
   },
 }).mount('#app');

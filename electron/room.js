@@ -177,7 +177,7 @@ class Room {
         };
         const prompt = this.buildPrompt(group, bot, job, members);
 
-        const r = this.runner.run(target, agent, prompt, {
+        const r = await this.runner.run(target, agent, prompt, {
           key: `${group.id}:${bot.id}`,
           sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
         });

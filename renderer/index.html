@@ -63,7 +63,7 @@
       <div class="me">
         <div class="avatar small">🦉</div>
         <div class="me-main"><b>本地工作区</b><small>{{runningCount ? runningCount + ' 个 Bot 在跑' : '空闲'}}</small></div>
-        <button class="mini" title="新建 Bot" @click="openNew()">＋</button>
+        <button class="mini" title="设置" @click="openSettings">⚙</button>
       </div>
     </div>
   </aside>
@@ -222,6 +222,7 @@
         <span class="term-cwd">{{shortPath(term.cwd)}}</span>
         <span class="term-hint" v-if="term.mode==='login'">在终端里完成授权，然后关掉面板重发消息</span>
         <span class="term-hint err" v-if="term.err">{{term.err}}</span>
+        <button class="ghost-btn acc" v-if="term.netHint" @click="useDirect">改用直连重试</button>
         <button class="ghost-btn acc" v-if="term.slashLogin" @click="sendSlashLogin">输入 /login</button>
         <button class="ghost-btn" @click="restartTerm">重启</button>
         <button class="ghost-btn" @click="openTerminal(active, term.mode==='login')">系统终端</button>
@@ -368,6 +369,58 @@
       </div>
     </div>
   </div>
+  <!-- ============ 设置 ============ -->
+  <div v-if="modal==='settings'" class="modal-wrap" @click.self="modal=null">
+    <div class="modal">
+      <header class="modal-head">
+        <div>
+          <h2>设置</h2>
+          <p>网络与运行环境（影响所有 Bot、内嵌终端、一键安装）</p>
+        </div>
+        <button class="icon-btn" @click="modal=null">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="form-col">
+          <div class="field">
+            <span>CLI 网络</span>
+            <div class="seg">
+              <button :class="{on: netForm.mode==='direct'}" @click="netForm.mode='direct'">直连</button>
+              <button :class="{on: netForm.mode==='inherit'}" @click="netForm.mode='inherit'">跟随系统</button>
+              <button :class="{on: netForm.mode==='custom'}" @click="netForm.mode='custom'">自定义代理</button>
+            </div>
+            <em class="hint">{{netHint}}</em>
+          </div>
+
+          <label class="field" v-if="netForm.mode==='custom'">
+            <span>代理地址</span>
+            <input v-model="netForm.url" placeholder="http://127.0.0.1:7897" />
+          </label>
+
+          <div class="field">
+            <span>连通性诊断 <em>测的是当前选项</em></span>
+            <div class="diag">
+              <div v-for="d in diagRows" :key="d.host" class="diag-row">
+                <span class="diag-host">{{d.host}}</span>
+                <span class="diag-val" :class="d.ok ? 'ok' : 'bad'">{{d.ok ? '正常 · ' + d.ms + 'ms' : '失败 · ' + d.error}}</span>
+              </div>
+              <div v-if="!diagRows.length" class="diag-idle">{{diagBusy ? '测试中…' : '还没测过，点一下开始'}}</div>
+            </div>
+            <div class="diag-actions">
+              <button class="ghost-btn" :disabled="diagBusy" @click="runDiagnose">{{diagBusy ? '测试中…' : '开始诊断'}}</button>
+              <span v-if="diag && diag.envProxy" class="diag-env">系统环境代理：{{diag.envProxy}}</span>
+            </div>
+          </div>
+
+          <div class="form-foot">
+            <span class="spacer"></span>
+            <button class="ghost-btn" @click="modal=null">取消</button>
+            <button class="primary" @click="saveNet">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ 群聊 ============ -->
   <div v-if="modal==='group'" class="modal-wrap" @click.self="modal=null">
     <div class="modal">

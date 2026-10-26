@@ -34,6 +34,7 @@ const CATALOG = [
     stdinPrompt: true,
     session: true,
     permission: true,
+    needsPort: true, // 它的默认本地端口 61172 常被 WorkBuddy 宿主占用，必须换端口
     install: { kind: 'npm', pkg: '@tencent-ai/codebuddy-code' },
     login: 'codebuddy',
     docs: 'https://copilot.tencent.com',

@@ -93,6 +93,21 @@ scripts/
 
 数据存在 `%APPDATA%\LocalBot\data\`（macOS/Linux 在对应 userData 目录），删掉即重置。
 
+## 网络与代理（很重要）
+
+**默认「直连」**：本应用不会把父进程环境里的 `HTTP(S)_PROXY` 传给 CLI。
+
+这不是洁癖。实测在装了本地代理（如 `127.0.0.1:7897`）的机器上，CodeBuddy 的 `setProxy` 会直接抛 `TypeError: Right-hand side of 'instanceof' is not callable`，随后登录报 `Client network socket disconnected before secure TLS connection was established`。去掉代理变量后一切正常。
+
+侧边栏 ⚙ → 设置里可以切「直连 / 跟随系统 / 自定义代理」，还能点「开始诊断」看三个关键域名的 TLS 握手结果（正常会显示毫秒数）。
+
+## 端口冲突
+
+codebuddy 系 CLI 有个「稳定的本地守护端口」（默认 `61172`），而 **WorkBuddy / CodeBuddy 桌面版通常正占着这个端口**。所以：
+
+- **非交互调用**（Bot 干活）：自动分配空闲端口传 `--port`，不受影响。
+- **交互式登录**：CLI 不接受 `--port`（会静默退出），撞端口时终端里会直接说明原因，建议关掉宿主程序后点「重启」，或用右上角「系统终端」到外面登录。
+
 ## 群聊怎么跑
 
 一个房间放多个 Bot，规则刻意做得简单可预期：
@@ -128,6 +143,8 @@ node scripts/test-runner.js codex  "回复 ok"
 - **提示未登录**：点消息里的"在窗口内登录"，底部会拉起该 CLI 的交互式终端（claude 系会给出"输入 /login"按钮），授权完成后关掉面板、把消息重发一次即可。
 - **提示找不到 CLI**：说明它不在 PATH 里，用弹窗里的"安装"或自己装完后点"刷新"。
 - **一直是空输出**：多半是该 CLI 的 `proto` 猜错了，先用 `test-runner.js` 确认原始输出格式。
+- **登录报 TLS / socket disconnected**：几乎都是代理问题。去设置里确认网络是「直连」，点「开始诊断」验证。
+- **终端里提示端口 61172 被占用**：关掉 WorkBuddy / CodeBuddy 桌面版再重试，或改用「系统终端」。
 
 ## 已知边界
 

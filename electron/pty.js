@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const pty = require('@lydell/node-pty');
+const net = require('net');
 const { resolveBin, buildEnv } = require('./runner');
 
 const isWin = process.platform === 'win32';
@@ -66,10 +67,41 @@ function resolveTarget(bot, agent, mode) {
   return { ...t, cwd: t.cwd || botCwd, slashLogin: agent.proto === 'claude' };
 }
 
-function open({ botId, bot, agent, mode, cols, rows }) {
+function freePort() {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(0));
+    srv.listen(0, '127.0.0.1', () => {
+      const p = (srv.address() || {}).port || 0;
+      srv.close(() => resolve(p));
+    });
+  });
+}
+
+async function open({ botId, bot, agent, mode, cols, rows }) {
   const target = resolveTarget(bot, agent, mode);
   const id = `p${++seq}`;
-  const env = { ...buildEnv(), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+  const env = { ...buildEnv({ tty: true }), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+
+  // 这类 CLI 的交互模式会复用「稳定的守护端口」（codebuddy 默认 61172），
+  // 而宿主 app 往往正占着它；用环境变量指到空闲端口，比 --port 更可靠。
+  if (agent && agent.needsPort) {
+    const p = await freePort();
+    if (p) {
+      env.CODEBUDDY_DESKTOP_DAEMON_STABLE_PORT = String(p);
+      env.CODEBUDDY_DAEMON_CONFIGURED_PORT = String(p);
+    }
+  }
+
+  // 这类 CLI 的交互模式会复用「稳定的守护端口」（codebuddy 默认 61172），
+  // 而宿主 app 往往正占着它；用环境变量指到空闲端口，比 --port 更可靠。
+  if (agent && agent.needsPort) {
+    const p = await freePort();
+    if (p) {
+      env.CODEBUDDY_DESKTOP_DAEMON_STABLE_PORT = String(p);
+      env.CODEBUDDY_DAEMON_CONFIGURED_PORT = String(p);
+    }
+  }
 
   const term = pty.spawn(target.file, target.args, {
     name: 'xterm-256color',
