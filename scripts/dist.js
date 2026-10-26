@@ -23,6 +23,29 @@ const ROOT = path.join(__dirname, '..');
 const pkg = require(path.join(ROOT, 'package.json'));
 const args = process.argv.slice(2);
 
+/* ---------- 0. 清理空签名环境变量 ---------- */
+/**
+ * GitHub Actions 里「未设置的 secret」会以**空字符串**注入环境变量。
+ * electron-builder 拿到空的 CSC_LINK 时会把它 resolve 成当前目录，
+ * 于是 macOS 打包报 “/Users/runner/work/<repo> not a file” —— 跟证书本身无关。
+ * 这里把值为空的签名相关变量直接删掉，让它走「没有证书」的正常分支。
+ */
+const SIGN_ENV = [
+  'CSC_LINK',
+  'CSC_KEY_PASSWORD',
+  'CSC_NAME',
+  'WIN_CSC_LINK',
+  'WIN_CSC_KEY_PASSWORD',
+  'APPLE_ID',
+  'APPLE_APP_SPECIFIC_PASSWORD',
+  'APPLE_TEAM_ID',
+  'APPLE_API_KEY',
+  'APPLE_API_KEY_ID',
+  'APPLE_API_ISSUER',
+];
+const clearedSignEnv = SIGN_ENV.filter((k) => k in process.env && process.env[k] === '');
+for (const k of clearedSignEnv) delete process.env[k];
+
 const NATIVE = {
   win32: { x64: '@lydell/node-pty-win32-x64', arm64: '@lydell/node-pty-win32-arm64' },
   darwin: { x64: '@lydell/node-pty-darwin-x64', arm64: '@lydell/node-pty-darwin-arm64' },
@@ -192,6 +215,10 @@ if (publishMode !== 'never') {
 }
 
 /* ---------- 6. 构建 ---------- */
+// macOS 上没有证书时显式关掉身份自动发现，免得 electron-builder 翻钥匙串后再报一堆警告
+if (platforms.includes('darwin') && !process.env.CSC_LINK) {
+  process.env.CSC_IDENTITY_AUTO_DISCOVERY = 'false';
+}
 const eb = require('electron-builder');
 const { build, Platform, Arch } = eb;
 const ARCH_MAP = { x64: Arch.x64, arm64: Arch.arm64 };
@@ -222,6 +249,10 @@ const buildConfig = {
   log(`Baton v${pkg.version}   构建机：${os.platform()} ${os.arch()}`);
   log(`目标：${platforms.map((p) => LABEL[p]).join(' + ')}   架构：${arches ? arches.join(', ') : '按 package.json'}`);
   log(`模式：${dirOnly ? '免安装目录（自检用）' : '完整安装包'}   源：${wantOfficial ? '官方' : 'npmmirror 镜像'}`);
+  log(
+    `签名：${process.env.CSC_LINK ? '已配置证书' : '未配置（产出未签名包，首次运行会有系统警告）'}`
+  );
+  if (clearedSignEnv.length) log(`已忽略空的签名变量：${clearedSignEnv.join(', ')}`);
   log('');
 
   const started = Date.now();
