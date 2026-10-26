@@ -300,6 +300,7 @@ function genericParser(sink) {
 function createParser(proto, sink) {
   switch (proto) {
     case 'claude':
+    case 'qoder': // Qoder CLI 与 Claude Code 同源，stream-json 协议一致
       return claudeParser(sink);
     case 'codex':
       return codexParser(sink);

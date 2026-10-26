@@ -4,11 +4,13 @@
  * 规则：
  *  - 用户 @谁 谁回答，按 @ 的顺序串行；没 @ 就交给「负责人」。
  *  - Bot 回答里 @其他成员 = 交班，接手的 Bot 会看到前面的群聊记录继续做。
- *  - 一轮最多 MAX_TURNS 跳，防止两个 Bot 互相甩锅无限循环。
+ *  - 结束条件：某个 Bot 的回答不再 @ 任何人，即视为任务完成、自然收尾。
+ *    不限制单个 Bot 出现的次数（允许「出方案→评审→回改→再审」来回多次），
+ *    只用 MAX_TURNS 兜底，防止极端情况下无限空转。
  */
 const { getAgent } = require('./agents');
 
-const MAX_TURNS = 4;
+const MAX_TURNS = 24;
 const CTX_MESSAGES = 14;
 const CTX_CHARS = 2400;
 
@@ -119,16 +121,13 @@ class Room {
     return chunks.filter(Boolean).join('\n\n');
   }
 
-  /** 从 Bot 的回答里挑下一个接手的人 */
-  pickHandoff(msg, group, spoke) {
+  /** 从 Bot 的回答里挑下一个接手的人：@ 了谁就交给谁（不限制次数） */
+  pickHandoff(msg, group) {
     const body = textOf(msg);
     if (!body) return null;
     const members = this.members(group);
     const mentioned = findMentions(body, members);
-    for (const id of mentioned) {
-      if (!spoke.has(id)) return id;
-    }
-    return null;
+    return mentioned[0] || null;
   }
 
   async send(group, userText, userMsg) {
@@ -148,7 +147,6 @@ class Room {
     const targets = mentioned.length ? mentioned : [leader];
 
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
-    const spoke = new Set();
     let turns = 0;
 
     try {
@@ -156,8 +154,6 @@ class Room {
         const job = queue.shift();
         const bot = this.getBot(job.botId);
         if (!bot) continue;
-        // 一轮里每个 Bot 只说一次：用户 @ 了它、前面又有人交班给它，也不重复跑
-        if (spoke.has(bot.id)) continue;
         const agent = getAgent(bot.agentId);
         if (!agent) {
           this.pushSystem(group.id, `找不到 ${bot.name} 对应的 CLI 配置`);
@@ -188,12 +184,15 @@ class Room {
         }
 
         const msg = await r.done;
-        spoke.add(bot.id);
         turns++;
         if (this.aborted.has(group.id)) break;
 
-        const next = this.pickHandoff(msg, group, spoke);
-        if (next) queue.push({ botId: next, text: job.text, from: bot.id });
+        const next = this.pickHandoff(msg, group);
+        if (next) {
+          // 去重：这个 Bot 已经排在队列里（比如用户一开始就 @ 了它），就不重复入队
+          const alreadyQueued = queue.some((j) => j.botId === next);
+          if (!alreadyQueued) queue.push({ botId: next, text: job.text, from: bot.id });
+        }
       }
     } finally {
       this.busy.delete(group.id);

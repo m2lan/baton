@@ -131,15 +131,15 @@ const CATALOG = [
     emoji: '🌊',
     color: '#2F6BFF',
     tag: '阿里 · 仓库级理解',
-    desc: 'Qoder 终端版，需要先安装 Qoder 客户端获取',
-    bin: 'qoder',
-    proto: 'generic',
-    stdinPrompt: false,
-    session: false,
-    permission: false,
-    install: { kind: 'manual', url: 'https://qoder.com', hint: '从 Qoder 官网下载客户端后在设置里启用 CLI' },
-    login: 'qoder',
-    docs: 'https://qoder.com',
+    desc: 'Qoder 官方终端 Agent，复用 Qoder 账号额度',
+    bin: 'qodercli',
+    proto: 'qoder',
+    stdinPrompt: true,
+    session: true,
+    permission: true,
+    install: { kind: 'npm', pkg: '@qoder-ai/qodercli' },
+    login: 'qodercli login',
+    docs: 'https://docs.qoder.com/zh/cli/overview',
     models: [],
   },
   {
@@ -241,6 +241,9 @@ function permissionArgs(agent, permission) {
     }
     case 'gemini':
       return ['--approval-mode', p === 'plan' ? 'plan' : p === 'default' ? 'default' : 'yolo'];
+    case 'qoder':
+      // qodercli 的权限枚举：bypass_permissions / dont_ask / auto
+      return ['--permission-mode', p === 'plan' ? 'auto' : p === 'default' ? 'dont_ask' : 'bypass_permissions'];
     case 'copilot':
       return p === 'plan' || p === 'readonly' ? [] : ['--allow-all-tools'];
     default:
@@ -280,6 +283,15 @@ function buildInvocation(agent, opts) {
     else if (sessionId) args.push('--session-id', sessionId);
     if (agent.stdinPrompt) return { file: agent.bin, args, stdin: full, proto: 'gemini' };
     return { file: agent.bin, args: [...args, '-p', full], proto: 'gemini' };
+  }
+
+  if (agent.proto === 'qoder') {
+    const args = ['-p', '--output-format', 'stream-json'];
+    args.push(...permissionArgs(agent, permission));
+    if (model) args.push('-m', model);
+    if (useResume) args.push('--resume', sessionId);
+    else if (sessionId) args.push('--session-id', sessionId);
+    return { file: agent.bin, args, stdin: full, proto: 'qoder' };
   }
 
   if (agent.proto === 'opencode') {
