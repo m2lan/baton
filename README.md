@@ -146,12 +146,7 @@ Point `repository.url` in `package.json` at your repo — electron-builder infer
 
 > Note: do **not** add a `build.publish` array. electron-builder 26 has a schema defect where `GithubOptions` references an undefined `$ref`, so any explicit `publish` array fails validation with `publish.0.provider must be equal to constant`. Inference from `repository` works fine.
 
-Unsigned builds still auto-update, but Windows SmartScreen and macOS Gatekeeper will complain about the publisher. To sign:
-
-| Platform | Secrets |
-| --- | --- |
-| Windows | `CSC_LINK`, `CSC_KEY_PASSWORD` |
-| macOS | `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` |
+Unsigned builds still auto-update, but users get a SmartScreen / Gatekeeper warning on first launch. See [Code signing](#code-signing).
 
 ## Packaging
 
@@ -180,6 +175,48 @@ Cross-architecture (e.g. arm64 from an x64 machine):
 npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
 node scripts/dist.js --win --arch=arm64
 ```
+
+### Code signing
+
+**Unsigned builds install and auto-update fine** — there is just one extra click on first launch:
+
+| Platform | What users see | How to get past it |
+| --- | --- | --- |
+| Windows | SmartScreen: "Windows protected your PC" | More info → Run anyway |
+| macOS | "Cannot be opened because the developer cannot be verified" | Right-click the app → Open, or `xattr -dr com.apple.quarantine /Applications/Baton.app` |
+
+If that warning bothers you, you need a certificate. Three realistic options:
+
+| Option | Best for | Notes |
+| --- | --- | --- |
+| **SignPath** (free for OSS) | Open-source projects | Free Windows signing for qualifying OSS projects; requires an application and review |
+| **Azure Trusted Signing** | Individuals / small teams | Microsoft's cloud signing, monthly fee, no hardware token; individual accounts need identity verification |
+| **Traditional OV / EV certificate** | Companies | Requires a registered business. Since 2023 these usually ship on a hardware token or cloud HSM, so **the private key cannot be exported** — `CSC_LINK` does not apply; use the certificate store or the vendor's cloud signing instead |
+
+> For a personal open-source project, **not signing is a perfectly reasonable choice**. Put the two bypass steps in your release notes. Spend money when people actually report being blocked, or when you need internal distribution at a company.
+
+#### Wiring a certificate into CI
+
+Once you have a `.pfx` (Windows) or `.p12` (macOS):
+
+```bash
+# GitHub secrets only hold text
+base64 -w0 cert.pfx > cert.b64        # macOS: base64 -i cert.pfx -o cert.b64
+```
+
+Then add these under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+| --- | --- |
+| `CSC_LINK` | Contents of `cert.b64` (a `https://` or `file://` URL also works) |
+| `CSC_KEY_PASSWORD` | Password set when exporting the certificate |
+| `APPLE_ID` | macOS notarization only |
+| `APPLE_APP_SPECIFIC_PASSWORD` | macOS notarization only (generate at appleid.apple.com) |
+| `APPLE_TEAM_ID` | macOS notarization only |
+
+The workflow already forwards all of these to `dist.js`, so no code changes are needed — the next tagged build will be signed.
+
+macOS entitlements live in `build/entitlements.mac.plist` (JIT, unsigned executable memory, disabled library validation — required for node-pty's `.node` binary). Providing the three `APPLE_*` variables is enough for electron-builder to notarize automatically.
 
 ## Network and proxy
 

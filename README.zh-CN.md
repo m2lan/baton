@@ -148,16 +148,47 @@ npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
 node scripts/dist.js --win --arch=arm64
 ```
 
-### 签名
+### 代码签名
 
-未配置证书时 electron-builder 自动跳过签名，Windows 上会出现"未知发布者"提示。
+**不签名也能装、也能自动更新**，只是第一次运行会多一步警告：
 
-| 平台 | 需要的 secrets |
+| 平台 | 用户看到的 | 怎么绕过 |
+| --- | --- | --- |
+| Windows | SmartScreen「Windows 已保护你的电脑」 | 点「更多信息」→「仍要运行」 |
+| macOS | 「无法验证开发者」 | 右键点 app →「打开」，或 `xattr -dr com.apple.quarantine /Applications/Baton.app` |
+
+介意这个提示的话，需要买证书。三条现实路径：
+
+| 方案 | 适用 | 说明 |
+| --- | --- | --- |
+| **SignPath**（开源免费） | 开源项目 | 给开源项目免费签 Windows 包，需要申请审核；通过后拿到证书再按下面配置 |
+| **Azure Trusted Signing** | 个人 / 小团队 | 微软自家云签名，按月付费，不需要硬件令牌；个人账号需通过身份验证 |
+| **传统 OV / EV 证书** | 公司 | 需要企业资质，2023 年后普遍要求硬件令牌或云 HSM，**私钥导不出来**，所以 `CSC_LINK` 那套对它不适用（要用证书存储或云签服务） |
+
+> 结论：如果是个人开源项目，**先不签名**完全可以，把上面的绕过方式写进 Release 说明即可。等有人反馈安装被拦、或者要上公司内部分发，再花钱。
+
+#### 配好证书后怎么接进 CI
+
+拿到 `.pfx`（Windows）或 `.p12`（macOS）之后：
+
+```bash
+# 转成 base64（GitHub Secret 只能存文本）
+base64 -w0 cert.pfx > cert.b64        # macOS: base64 -i cert.pfx -o cert.b64
+```
+
+仓库 → **Settings → Secrets and variables → Actions** 里加：
+
+| Secret | 值 |
 | --- | --- |
-| Windows | `CSC_LINK`、`CSC_KEY_PASSWORD` |
-| macOS | `CSC_LINK`、`CSC_KEY_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID` |
+| `CSC_LINK` | `cert.b64` 的全部内容（也可以填 `https://...` 或 `file://...`） |
+| `CSC_KEY_PASSWORD` | 导出证书时设的密码 |
+| `APPLE_ID` | 仅 macOS 公证需要 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | 仅 macOS 公证需要（appleid.apple.com 生成） |
+| `APPLE_TEAM_ID` | 仅 macOS 公证需要 |
 
-macOS 的签名权限已放在 `build/entitlements.mac.plist`（JIT、未签名可执行内存、关闭库校验——node-pty 的 `.node` 必须能加载）。
+workflow 已经把这些变量透传给 `dist.js`，加完 secrets 不用改任何代码，下次打 tag 出来的就是签名版。
+
+macOS 的签名权限在 `build/entitlements.mac.plist`（JIT、未签名可执行内存、关闭库校验——node-pty 的 `.node` 必须能加载）。只要提供了 `APPLE_ID` 那三个变量，electron-builder 会自动走公证（notarize），不需要额外配置。
 
 ## 自动更新
 
