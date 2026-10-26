@@ -83,25 +83,8 @@ async function open({ botId, bot, agent, mode, cols, rows }) {
   const id = `p${++seq}`;
   const env = { ...buildEnv({ tty: true, agentId: agent && agent.id }), TERM: 'xterm-256color', COLORTERM: 'truecolor' };
 
-  // 这类 CLI 的交互模式会复用「稳定的守护端口」（codebuddy 默认 61172），
-  // 而宿主 app 往往正占着它；用环境变量指到空闲端口，比 --port 更可靠。
-  if (agent && agent.needsPort) {
-    const p = await freePort();
-    if (p) {
-      env.CODEBUDDY_DESKTOP_DAEMON_STABLE_PORT = String(p);
-      env.CODEBUDDY_DAEMON_CONFIGURED_PORT = String(p);
-    }
-  }
-
-  // 这类 CLI 的交互模式会复用「稳定的守护端口」（codebuddy 默认 61172），
-  // 而宿主 app 往往正占着它；用环境变量指到空闲端口，比 --port 更可靠。
-  if (agent && agent.needsPort) {
-    const p = await freePort();
-    if (p) {
-      env.CODEBUDDY_DESKTOP_DAEMON_STABLE_PORT = String(p);
-      env.CODEBUDDY_DAEMON_CONFIGURED_PORT = String(p);
-    }
-  }
+  // 交互模式不要去改它的守护端口：指定后它要么静默退出，要么复用不到。
+  // 只要把宿主注入的 SERVER__PORT / CODEBUDDY_*_PORT 清掉，它就会用默认端口。
 
   const term = pty.spawn(target.file, target.args, {
     name: 'xterm-256color',

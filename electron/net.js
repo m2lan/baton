@@ -13,7 +13,21 @@ const tls = require('tls');
 
 const PROXY_KEYS = ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'];
 // WorkBuddy/CodeBuddy 宿主注入的内部变量，别让被拉起的 CLI 继承
-const HOST_KEYS = ['CODEBUDDY_SERVICE_PROXY_URL', 'CODEBUDDY_MCP_CONFIG'];
+const HOST_KEYS = [
+  'CODEBUDDY_SERVICE_PROXY_URL',
+  'CODEBUDDY_MCP_CONFIG',
+  // 宿主 app 自己的守护端口，带过去只会让子进程去抢它已经占住的端口
+  'CODEBUDDY_DESKTOP_DAEMON_STABLE_PORT',
+  'CODEBUDDY_DAEMON_CONFIGURED_PORT',
+  'CODEBUDDY_IDE_PORT',
+  'CLAUDE_CODE_SSE_PORT',
+  // 宿主 app 自己的 HTTP 服务端口（实测 CLI 会读 SERVER__PORT 去 listen）
+  'SERVER__PORT',
+  // 宿主强制 headless/lite 打包：带过去 CLI 就不出界面、直接退出
+  'CODEBUDDY_FORCE_HEADLESS_BUNDLE',
+  'CODEBUDDY_FORCE_LITE_WB_BUNDLE',
+  'CODEBUDDY_HOST',
+];
 
 /** 这些 CLI 的后端在国内，直连更稳，且对代理变量敏感 */
 const DOMESTIC = new Set(['codebuddy', 'qwen', 'mimo', 'qoder', 'iflow']);
@@ -59,7 +73,12 @@ function applyProxy(env, agentId) {
     for (const k of PROXY_KEYS) {
       if (process.env[k] !== undefined) env[k] = process.env[k];
     }
+    return env;
   }
+
+  // 直连：光删环境变量不够 —— codebuddy 会自己读 Windows 注册表里的系统代理
+  // （日志里的 "ProxyResolver OS proxy detected"），必须用 NO_PROXY 明确让它别走代理
+  env.NO_PROXY = env.no_proxy = '*';
   return env;
 }
 
