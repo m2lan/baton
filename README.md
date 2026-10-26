@@ -176,6 +176,14 @@ npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
 node scripts/dist.js --win --arch=arm64
 ```
 
+### Intel Macs
+
+The `macos-x64` CI job is **opt-in** (unchecked by default). GitHub is retiring the `macos-13` runners and they queue for a long time, which blocks the whole workflow. Trigger the workflow manually and tick *build_intel* when you need one, or build locally:
+
+```bash
+node scripts/dist.js --mac --arch=x64
+```
+
 ### Code signing
 
 **Unsigned builds install and auto-update fine** — there is just one extra click on first launch:

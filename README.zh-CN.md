@@ -148,6 +148,14 @@ npm i -D --no-save @lydell/node-pty-win32-arm64@1.2.0-beta.18
 node scripts/dist.js --win --arch=arm64
 ```
 
+### Intel Mac
+
+CI 里的 `macos-x64` 是**可选**的（默认不勾）。GitHub 正在退役 `macos-13` 这批 Intel runner，排队经常几十分钟起步，会把整个 workflow 拖住。需要时手动触发并勾上 *build_intel*，或者本地直接打：
+
+```bash
+node scripts/dist.js --mac --arch=x64
+```
+
 ### 代码签名
 
 **不签名也能装、也能自动更新**，只是第一次运行会多一步警告：
