@@ -144,6 +144,12 @@ createApp({
     const bots = ref([]);
     const groups = ref([]);
     const settings = ref({});
+    // 界面语言偏好：'auto' 跟随系统，或 'zh' / 'en'
+    const langPref = ref('auto');
+    const langOptions = window.I18N.LANGS;
+    const langCode = computed(() => window.I18N.resolveLang(langPref.value));
+    /** 模板里统一用 t('key')；读 langCode 会自动建立依赖，切语言即重渲染 */
+    const t = (key, vars) => window.I18N.t(key, vars, langCode.value);
     const netForm = reactive({ mode: 'auto', url: '', perAgent: {} });
     const diag = ref(null);
     const diagBusy = ref(false);
@@ -215,12 +221,10 @@ createApp({
       const a = active.value;
       if (!a) return '';
       if (isBusy(a.id)) {
-        return a.kind === 'group'
-          ? '补充要求？Enter 发送，当前这个跑完就轮到它读到'
-          : '补充要求？Enter 发送，会排在这轮之后';
+        return a.kind === 'group' ? t('composer.placeholderBusyGroup') : t('composer.placeholderBusyBot');
       }
-      if (a.kind === 'group') return '在群里说点什么，@ 某个 Bot 让它回答';
-      return `给 ${a.name} 派个活，Enter 发送`;
+      if (a.kind === 'group') return t('composer.placeholderGroup');
+      return t('composer.placeholderBot', { name: a.name });
     });
     const netHint = computed(() => {
       if (netForm.mode === 'auto') {
@@ -374,6 +378,7 @@ createApp({
       const data = await window.lb.init();
       agents.value = data.agents || [];
       settings.value = data.settings || {};
+      if (settings.value.lang) langPref.value = settings.value.lang;
       applyProxySettings(settings.value.proxy);
       bots.value = data.bots || [];
       if (data.app) {
@@ -684,6 +689,13 @@ createApp({
       const proxy = { mode: netForm.mode, url: netForm.url.trim(), perAgent: { ...netForm.perAgent } };
       settings.value = (await window.lb.saveSettings({ proxy })) || settings.value;
       modal.value = null;
+    }
+
+    /** 切换界面语言：立即生效并落盘，不用重启 */
+    async function setLang(v) {
+      langPref.value = v;
+      document.documentElement.lang = window.I18N.resolveLang(v) === 'zh' ? 'zh-CN' : 'en';
+      settings.value = (await window.lb.saveSettings({ lang: v })) || settings.value;
     }
 
     function clearOverride(agentId) {
@@ -1043,6 +1055,7 @@ createApp({
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
+      t, langPref, langCode, langOptions, setLang,
     };
   },
 }).mount('#app');

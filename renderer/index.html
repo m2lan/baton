@@ -15,21 +15,21 @@
       <div class="brand-mark">◈</div>
       <div class="brand-text">
         <b>Baton</b>
-        <small>本机 CLI 团队 · {{installedCount}}/{{agents.length}}</small>
+        <small>{{ t('sidebar.tagline', {n: installedCount, total: agents.length}) }}</small>
       </div>
-      <button class="icon-btn new" title="新建 Bot" @click="openNew">＋</button>
+      <button class="icon-btn new" :title="t('sidebar.newBot')" @click="openNew">＋</button>
     </div>
 
     <div class="search">
       <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-      <input v-model="query" placeholder="搜索会话" />
-      <button class="mini" title="重新扫描本机 CLI" @click="refreshAgents">⟳</button>
+      <input v-model="query" :placeholder="t('sidebar.search')" />
+      <button class="mini" :title="t('sidebar.rescan')" @click="refreshAgents">⟳</button>
     </div>
 
     <div class="list">
       <div class="list-label">
-        <span>会话</span><span class="count">{{filtered.length}}</span>
-        <button class="mini" title="新建群聊" @click="openGroupNew">👥</button>
+        <span>{{ t('sidebar.chats') }}</span><span class="count">{{filtered.length}}</span>
+        <button class="mini" :title="t('sidebar.newGroup')" @click="openGroupNew">👥</button>
       </div>
 
       <div v-for="c in filtered" :key="c.id" class="row" :class="{active: c.id===activeId}" @click="select(c.id)">
@@ -48,22 +48,22 @@
       </div>
 
       <div v-if="!filtered.length" class="list-empty">
-        {{bots.length || groups.length ? '没有匹配的会话' : '还没有 Bot，点右上角 ＋ 建一个'}}
+        {{ bots.length || groups.length ? t('sidebar.noMatch') : t('sidebar.noBots') }}
       </div>
     </div>
 
     <div class="side-foot">
       <div class="env">
         <div class="env-top">
-          <span class="dot-ok"></span> 本机 CLI
-          <b>{{installedCount}}/{{agents.length}}</b> 可用
-          <button class="mini env-refresh" title="重新扫描" @click="refreshAgents">刷新</button>
+          <span class="dot-ok"></span> {{ t('sidebar.localCli') }}
+          <b>{{installedCount}}/{{agents.length}}</b> {{ t('sidebar.available') }}
+          <button class="mini env-refresh" :title="t('sidebar.rescan')" @click="refreshAgents">{{ t('sidebar.refresh') }}</button>
         </div>
       </div>
       <div class="me">
         <div class="avatar small">🦉</div>
-        <div class="me-main"><b>本地工作区</b><small>{{runningCount ? runningCount + ' 个 Bot 在跑' : '空闲'}}</small></div>
-        <button class="mini" title="设置" @click="openSettings">⚙<i v-if="updateState.state === 'ready'" class="upd-dot"></i></button>
+        <div class="me-main"><b>{{ t('sidebar.workspace') }}</b><small>{{ runningCount ? t('sidebar.running', {n: runningCount}) : t('sidebar.idle') }}</small></div>
+        <button class="mini" :title="t('sidebar.settings')" @click="openSettings">⚙<i v-if="updateState.state === 'ready'" class="upd-dot"></i></button>
       </div>
     </div>
   </aside>
@@ -76,7 +76,7 @@
         <div class="head-title">
           {{active.name}}
           <template v-if="active.kind==='group'">
-            <span class="badge group">群聊 · {{active.members.length}} 个 Bot</span>
+            <span class="badge group">{{ t('head.groupBadge', {n: active.members.length}) }}</span>
           </template>
           <template v-else>
             <span class="badge" :style="{borderColor: active.color+'55', color: active.color}">{{agentOf(active)?.name}}</span>
@@ -88,32 +88,32 @@
             <span v-for="m in active.members" :key="m.id" class="mini-avatar" :style="avatarStyle(m)" :title="m.name">{{m.emoji}}</span>
           </span>
           <span class="sep">·</span>
-          <span class="path" @click="openFolder(active)">{{active.cwd || '跟随各 Bot 的目录'}}</span>
+          <span class="path" @click="openFolder(active)">{{ active.cwd || t('head.followDir') }}</span>
           <span class="sep">·</span>
-          <span>@ 谁谁回答，回答里 @ 别人即交班</span>
+          <span>{{ t('head.atHint') }}</span>
         </div>
         <div class="head-sub" v-else>
-          <span class="path" @click="openFolder(active)">{{active.cwd || '默认目录'}}</span>
+          <span class="path" @click="openFolder(active)">{{ active.cwd || t('head.defaultDir') }}</span>
           <span class="sep">·</span>
           <span>{{permLabel(active.permission)}}</span>
           <span v-if="active.sessionId" class="sep">·</span>
-          <span v-if="active.sessionId">会话 {{active.sessionId.slice(0,8)}}</span>
+          <span v-if="active.sessionId">{{ t('head.session', {id: active.sessionId.slice(0,8)}) }}</span>
         </div>
       </div>
       <div class="head-actions">
         <template v-if="active.kind==='group'">
-          <button class="ghost-btn" @click="openGroupEdit(active)">成员</button>
+          <button class="ghost-btn" @click="openGroupEdit(active)">{{ t('head.members') }}</button>
         </template>
         <template v-else>
-          <span v-if="active.authed === true" class="badge ok-badge">已登录</span>
-          <span v-else-if="active.authed === false" class="badge warn-badge">未登录</span>
+          <span v-if="active.authed === true" class="badge ok-badge">{{ t('head.loggedIn') }}</span>
+          <span v-else-if="active.authed === false" class="badge warn-badge">{{ t('head.notLoggedIn') }}</span>
           <button class="ghost-btn" @click="openTerm(active.authed === false ? 'login' : 'shell')">
-            {{ active.authed === false ? '去登录' : '终端' }}
+            {{ active.authed === false ? t('head.goLogin') : t('head.terminal') }}
           </button>
-          <button class="ghost-btn" @click="openEdit(active)">设置</button>
+          <button class="ghost-btn" @click="openEdit(active)">{{ t('sidebar.settings') }}</button>
         </template>
-        <button class="ghost-btn" @click="exportChat" title="导出为 Markdown">导出</button>
-        <button class="ghost-btn" @click="clearChat">清空</button>
+        <button class="ghost-btn" @click="exportChat" :title="t('head.exportTip')">{{ t('head.export') }}</button>
+        <button class="ghost-btn" @click="clearChat">{{ t('head.clear') }}</button>
       </div>
     </header>
 
@@ -122,23 +122,23 @@
       <div v-if="!active" class="hero">
         <!-- 一个 CLI 都没有：给三步引导，而不是甩一排灰卡片 -->
         <template v-if="!installedCount">
-          <div class="hero-badge warn">还没检测到任何 AI CLI</div>
-          <h1>三步就能<span class="grad">开始干活</span></h1>
-          <p>Baton 自己不调用模型，它驱动你本机已经装好的 AI CLI。<br/>先把其中一个装起来，剩下的交给 Baton。</p>
+          <div class="hero-badge warn">{{ t('hero.noCliBadge') }}</div>
+          <h1>{{ t('hero.title') }}</h1>
+          <p v-html="t('hero.sub')"></p>
 
           <div class="steps">
             <div class="step">
               <span class="step-no">1</span>
               <div class="step-body">
-                <b>装一个 AI CLI</b>
-                <p>点下面的「复制」，把命令贴到终端执行；装完回来点最下方的「重新扫描」。</p>
+                <b>{{ t('hero.step1Title') }}</b>
+                <p>{{ t('hero.step1Body') }}</p>
                 <div class="cmd-list">
                   <div v-for="a in quickStartCLIs" :key="a.id" class="cmd-row">
                     <span class="cr-name">{{a.emoji}} {{a.name}}</span>
                     <code>{{a.installCmd}}</code>
-                    <button class="mini" @click="copyText(a.installCmd)" title="复制命令">复制</button>
+                    <button class="mini" @click="copyText(a.installCmd)" :title="t('hero.copyTip')">{{ t('hero.copy') }}</button>
                   </div>
-                  <div v-if="!quickStartCLIs.length" class="cmd-empty">这几个都需要手动下载，去官网装完再回来。</div>
+                  <div v-if="!quickStartCLIs.length" class="cmd-empty">{{ t('hero.manualOnly') }}</div>
                 </div>
               </div>
             </div>
@@ -146,41 +146,41 @@
             <div class="step">
               <span class="step-no">2</span>
               <div class="step-body">
-                <b>登录</b>
-                <p>多数 CLI 第一次运行会自己打开浏览器让你授权。如果新建 Bot 后发现它没登录，在会话里点「在窗口内登录」，不用另外开终端。</p>
+                <b>{{ t('hero.step2Title') }}</b>
+                <p>{{ t('hero.step2Body') }}</p>
               </div>
             </div>
 
             <div class="step">
               <span class="step-no">3</span>
               <div class="step-body">
-                <b>建第一个 Bot</b>
-                <p>给它起个名字、选个干活目录，就能派任务了。想让几个 Bot 互相配合，再建个群聊把它们拉进来。</p>
+                <b>{{ t('hero.step3Title') }}</b>
+                <p>{{ t('hero.step3Body') }}</p>
               </div>
             </div>
           </div>
 
           <div class="hero-cta">
-            <button class="primary big" @click="refreshAgents">装好了，重新扫描</button>
-            <button class="ghost-btn big" @click="openExternal('https://github.com/m2lan/baton#readme')">看文档</button>
+            <button class="primary big" @click="refreshAgents">{{ t('hero.rescanCta') }}</button>
+            <button class="ghost-btn big" @click="openExternal('https://github.com/m2lan/baton#readme')">{{ t('hero.docsCta') }}</button>
           </div>
         </template>
 
         <!-- 已装了 CLI：正常入口 -->
         <template v-else>
-          <div class="hero-badge">本机已安装 {{installedCount}} 个 AI CLI</div>
-          <h1>把你的 CLI，<span class="grad">变成一支 Bot 团队</span></h1>
-          <p>每个 Bot 绑定本机一个 AI CLI，拥有自己的工作目录和记忆。<br/>像给同事派活一样派任务，多个 Bot 可以同时干活。</p>
+          <div class="hero-badge">{{ t('hero.installedBadge', {n: installedCount}) }}</div>
+          <h1 v-html="t('hero.mainTitle')"></h1>
+          <p v-html="t('hero.mainSub')"></p>
           <div class="hero-cta">
-            <button class="primary big" @click="openNew()">＋ 新建一个 Bot</button>
-            <button class="ghost-btn big" @click="openGroupNew">👥 新建群聊</button>
-            <button class="ghost-btn big" @click="refreshAgents">重新扫描本机 CLI</button>
+            <button class="primary big" @click="openNew()">{{ t('hero.newBotCta') }}</button>
+            <button class="ghost-btn big" @click="openGroupNew">{{ t('hero.newGroupCta') }}</button>
+            <button class="ghost-btn big" @click="refreshAgents">{{ t('hero.rescanBtn') }}</button>
           </div>
           <div class="hero-grid">
             <button v-for="a in agents" :key="a.id" class="hero-card" :class="{off:!a.installed}" @click="openNew(a.id)">
               <span class="hc-emoji">{{a.emoji}}</span>
               <span class="hc-name">{{a.name}}</span>
-              <span class="hc-tag">{{a.installed ? verLabel(a) : '未安装 · 点击安装'}}</span>
+              <span class="hc-tag">{{ a.installed ? verLabel(a) : t('hero.notInstalled') }}</span>
             </button>
           </div>
         </template>
@@ -294,14 +294,14 @@
           <span class="qb-dot" :style="{background: roomProgress[active.id].currentList[0].color}"></span>
           <b v-if="roomProgress[active.id].currentList.length===1">{{roomProgress[active.id].currentList[0].name}}</b>
           <b v-else>{{roomProgress[active.id].currentList.map(b=>b.name).join('、')}}</b>
-          <span class="qb-label">{{ roomProgress[active.id].currentList.length > 1 ? '并行中' : '正在跑' }}</span>
-          <span class="qb-turn" v-if="roomProgress[active.id].maxTurns">第 {{roomProgress[active.id].turn}}/{{roomProgress[active.id].maxTurns}} 轮</span>
+          <span class="qb-label">{{ roomProgress[active.id].currentList.length > 1 ? t('queue.parallel') : t('queue.running') }}</span>
+          <span class="qb-turn" v-if="roomProgress[active.id].maxTurns">{{ t('queue.turn', {n: roomProgress[active.id].turn, total: roomProgress[active.id].maxTurns}) }}</span>
         </span>
         <span class="qb-next" v-if="roomProgress[active.id].queue.length">
-          <span class="qb-label">排队</span>
+          <span class="qb-label">{{ t('queue.queued') }}</span>
           <span v-for="q in roomProgress[active.id].queue" :key="q.id" class="qb-chip" :title="q.name">{{q.emoji}} {{q.name}}</span>
         </span>
-        <span class="qb-idle" v-else>说完就结束，除非它 @ 别人</span>
+        <span class="qb-idle" v-else>{{ t('queue.idle') }}</span>
       </div>
 
       <!-- @ 成员选择 -->
@@ -324,28 +324,28 @@
         ></textarea>
         <div class="composer-bar">
           <div class="chips" v-if="active.kind==='group'">
-            <span class="chip" @click="openGroupEdit(active)">👥 {{active.members.length}} 个成员</span>
+            <span class="chip" @click="openGroupEdit(active)">👥 {{ t('composer.membersChip', {n: active.members.length}) }}</span>
             <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
-            <span class="chip hint-chip">@ 指定谁回答</span>
+            <span class="chip hint-chip">{{ t('composer.atChip') }}</span>
           </div>
           <div class="chips" v-else>
-            <span class="chip" @click="openEdit(active)">🧠 {{active.model || '默认模型'}}</span>
+            <span class="chip" @click="openEdit(active)">🧠 {{ active.model || t('composer.defaultModel') }}</span>
             <span class="chip" @click="openEdit(active)">🛡 {{permLabel(active.permission)}}</span>
             <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
           </div>
-          <button v-if="isBusy(active.id)" class="send stop" @click="stop" title="停止当前任务">
+          <button v-if="isBusy(active.id)" class="send stop" @click="stop" :title="t('composer.stop')">
             <span class="square"></span>
           </button>
-          <button class="send" :disabled="!draft.trim()" @click="send" :title="isBusy(active.id) ? '排到当前任务之后' : '发送'">
+          <button class="send" :disabled="!draft.trim()" @click="send" :title="isBusy(active.id) ? t('composer.queueSend') : t('composer.send')">
             <svg viewBox="0 0 24 24" class="ico"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>
           </button>
         </div>
       </div>
       <div class="composer-hint" v-if="active.kind==='group'">
-        <template v-if="isBusy(active.id)">跑的时候也能发，会排到当前这一轮之后，由下一个接手的 Bot 读到</template>
-        <template v-else>Enter 发送 · @ 指定回答者 · 回答里 @ 别人会自动交班</template>
+        <template v-if="isBusy(active.id)">{{ t('composer.hintGroupBusy') }}</template>
+        <template v-else>{{ t('composer.hintGroup') }}</template>
       </div>
-      <div class="composer-hint" v-else>Enter 发送 · Shift+Enter 换行 · 任务在本机 CLI 里真实执行</div>
+      <div class="composer-hint" v-else>{{ t('composer.hintBot') }}</div>
     </footer>
   </main>
 
@@ -459,6 +459,13 @@
       </header>
       <div class="modal-body">
         <div class="form-col">
+          <div class="field">
+            <span>{{ t('settings.lang') }} <em>{{ t('settings.langHint') }}</em></span>
+            <div class="seg">
+              <button v-for="l in langOptions" :key="l.v" :class="{on: langPref===l.v}" @click="setLang(l.v)">{{ l.label }}</button>
+            </div>
+          </div>
+
           <div class="field">
             <span>CLI 网络</span>
             <div class="seg">
@@ -639,6 +646,7 @@
 <script src="vendor/vue.global.prod.js"></script>
 <script src="vendor/xterm.js"></script>
 <script src="vendor/addon-fit.js"></script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
