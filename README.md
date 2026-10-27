@@ -94,7 +94,10 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
 1. **`@` addresses someone.** Whoever you mention answers, in order, serially — the next one sees what the previous one produced.
 2. **No mention → the lead answers.** Pick a lead in the room settings; it can `@` someone else if it needs help.
 3. **An `@` in a reply is a handoff.** That member gets woken up to continue. **The same Bot can take over repeatedly**, so a cycle like "draft → review → revise → re-review" runs itself to completion.
-4. **When it stops:** a reply that mentions nobody means the job is done, and the turn ends naturally. There is no per-Bot cap — only a 24-hop fuse against two Bots spinning forever.
+4. **When it stops:** a reply that mentions nobody means the job is done, and the turn ends naturally. There is no per-Bot cap. Three fuses keep it from running away:
+   - **Per-run timeout** — a single call that exceeds 5 minutes is killed and explained (`BATON_RUN_TIMEOUT_MS` to change)
+   - **No progress** — if the same Bot says essentially the same thing twice in a row, it counts as spinning and stops
+   - **Hop limit** — 60 hops, purely an outer fuse
 
 While a room is busy, a bar above the composer shows **who is running and who is queued**, so you never have to guess which step you are on.
 

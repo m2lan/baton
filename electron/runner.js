@@ -11,6 +11,13 @@ const platform = require('./platform');
 
 const isWin = process.platform === 'win32';
 
+/**
+ * 单轮运行上限：CLI 卡住时的兜底（等交互确认、网络挂起、内部死循环都会这样）。
+ * 不设的话界面会一直转圈，用户只能强杀进程。
+ * 可用 BATON_RUN_TIMEOUT_MS 覆盖，最低 30 秒。
+ */
+const RUN_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_RUN_TIMEOUT_MS) || 5 * 60 * 1000);
+
 /* ---------------- 环境与可执行文件解析 ---------------- */
 let dirsCache = { at: 0, list: [] };
 
@@ -210,6 +217,22 @@ class Runner {
     this.running.set(key, ctx);
     this.emit('run:start', { key, msgId: msg.id });
 
+    // 卡住兜底：到点强制收掉，并给出可读原因
+    ctx.timer = setTimeout(() => {
+      if (!this.running.has(key)) return;
+      ctx.timedOut = true;
+      ctx.dirty = true;
+      const label = RUN_TIMEOUT_MS >= 60000
+        ? `${Math.round(RUN_TIMEOUT_MS / 60000)} 分钟`
+        : `${Math.round(RUN_TIMEOUT_MS / 1000)} 秒`;
+      sink.error(
+        `${label}没有结束，已自动停止。`
+          + '如果是正常的超长任务，可以用 BATON_RUN_TIMEOUT_MS 调大上限。'
+      );
+      killTree(child);
+    }, RUN_TIMEOUT_MS);
+    if (ctx.timer.unref) ctx.timer.unref();
+
     const parser = createParser(inv.proto, sink);
 
     let buf = '';
@@ -358,6 +381,10 @@ class Runner {
   finish(key, ctx, code) {
     const msg = ctx.msg;
     this.running.delete(key);
+    if (ctx.timer) {
+      clearTimeout(ctx.timer);
+      ctx.timer = null;
+    }
 
     const errText = stripAnsi(ctx.stderr.join('')).trim();
     if (!msg.error && code !== 0 && !ctx.stopped) {
@@ -365,6 +392,7 @@ class Runner {
       if (AUTH_HINT.test(msg.error)) msg.meta = { ...(msg.meta || {}), authError: true };
     }
     if (ctx.stopped) msg.meta = { ...(msg.meta || {}), stopped: true };
+    if (ctx.timedOut) msg.meta = { ...(msg.meta || {}), timeout: true };
 
     // 登录态判断要扫全文：有些 CLI 把「需要登录」当普通输出打到 stdout
     const allText = msg.parts.map((p) => (p.type === 'text' ? p.text : '')).join('\n') + '\n' + (msg.error || '');

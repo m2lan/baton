@@ -10,7 +10,11 @@
  */
 const { getAgent } = require('./agents');
 
-const MAX_TURNS = 24;
+const MAX_TURNS = 60;
+// 同一个 Bot 连续两次说出几乎一样的话，判定为原地打转。
+// 单轮超时已在 runner 里兜底，这里管的是「跑得动但没进展」。
+const STALL_SIMILARITY = 0.92;
+const STALL_MIN_CHARS = 20; // 太短的回复（如「同意」「收到」）不参与判定，避免误伤
 // 上下文分三层预算：用户的每句话都是需求，不能丢；别人的发言只留结论 + 近期
 const CTX_BUDGET_ASK = 1500; // ① 用户需求锚点
 const CTX_BUDGET_DECISION = 1600; // ② 其他 Bot 的结论
@@ -25,6 +29,28 @@ function textOf(msg) {
     .map((p) => p.text)
     .join('\n')
     .trim();
+}
+
+/**
+ * 4-gram Jaccard 相似度，用来识别「同一 Bot 连续两轮说的话几乎一样」。
+ * 只关心是否原地打转，不需要精确的语义相似度。
+ * 先把数字归一成 #：「第 2 轮」和「第 3 轮」本质是同一句话，
+ * 否则真实死循环会因为轮次数字不同而漏判（实测相似度只有 0.84）。
+ */
+function similarity(a, b) {
+  const norm = (s) => String(s || '').replace(/\d+/g, '#').replace(/\s+/g, ' ');
+  const grams = (s) => {
+    const t = norm(s);
+    const set = new Set();
+    for (let i = 0; i + 4 <= t.length; i++) set.add(t.slice(i, i + 4));
+    return set;
+  };
+  const A = grams(a);
+  const B = grams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return inter / (A.size + B.size - inter);
 }
 
 /** 从文本里按出现顺序找出被 @ 的成员（名字互为前缀时取最长匹配） */
@@ -217,6 +243,7 @@ class Room {
 
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
     let turns = 0;
+    const lastText = new Map(); // botId -> 上一轮的正文，用于识别原地打转
     this.emitState(group, { active: true, queue, turn: 0 });
 
     try {
@@ -259,6 +286,18 @@ class Room {
         const msg = await r.done;
         turns++;
         if (this.aborted.has(group.id)) break;
+
+        // 原地打转：同一个 Bot 连续两次说的几乎一样，再排下去也只是烧 token
+        const body = textOf(msg);
+        const prev = lastText.get(bot.id);
+        if (prev && body.length >= STALL_MIN_CHARS && similarity(prev, body) >= STALL_SIMILARITY) {
+          this.pushSystem(
+            group.id,
+            `${bot.name} 这轮和上一轮说的几乎一样，判定为原地打转，已停下。换个更具体的要求，或 @ 另一个成员打破僵局。`
+          );
+          break;
+        }
+        lastText.set(bot.id, body);
 
         const next = this.pickHandoff(msg, group);
         if (next) {
@@ -311,4 +350,4 @@ class Room {
   }
 }
 
-module.exports = { Room, findMentions, textOf };
+module.exports = { Room, findMentions, textOf, similarity };
