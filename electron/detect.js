@@ -12,6 +12,19 @@ const { stripAnsi } = require('./parsers');
 const PROBE_TIMEOUT = 4500;
 const CONCURRENCY = 4;
 
+/** 把 install 配置换算成当前平台上可直接复制执行的一条命令 */
+function installCmdOf(inst) {
+  if (!inst) return '';
+  if (inst.kind === 'npm') return `npm i -g ${inst.pkg}`;
+  if (inst.kind === 'script' || inst.kind === 'cmd') {
+    const p = process.platform;
+    if (p === 'win32') return inst.win || inst.cmd || '';
+    if (p === 'darwin') return inst.mac || inst.unix || inst.cmd || '';
+    return inst.linux || inst.unix || inst.cmd || '';
+  }
+  return '';
+}
+
 function baseInfo(a) {
   return {
     id: a.id,
@@ -23,6 +36,9 @@ function baseInfo(a) {
     docs: a.docs,
     installKind: a.install && a.install.kind,
     installHint: a.install && (a.install.hint || a.install.pkg || a.install.cmd),
+    installCmd: installCmdOf(a.install),
+    installUrl: a.install && a.install.url,
+    loginHint: a.login || '',
     models: a.models || [],
     session: !!a.session,
     permission: !!a.permission,
@@ -179,4 +195,4 @@ class Detector {
   }
 }
 
-module.exports = { Detector, parseVersion };
+module.exports = { Detector, parseVersion, installCmdOf };

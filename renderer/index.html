@@ -119,21 +119,70 @@
     <section class="stream" ref="stream" @scroll="onScroll">
       <!-- 空态 -->
       <div v-if="!active" class="hero">
-        <div class="hero-badge">本机已安装 {{installedCount}} 个 AI CLI</div>
-        <h1>把你的 CLI，<span class="grad">变成一支 Bot 团队</span></h1>
-        <p>每个 Bot 绑定本机一个 AI CLI，拥有自己的工作目录和记忆。<br/>像给同事派活一样派任务，多个 Bot 可以同时干活。</p>
-        <div class="hero-cta">
-          <button class="primary big" @click="openNew()">＋ 新建一个 Bot</button>
-          <button class="ghost-btn big" @click="openGroupNew">👥 新建群聊</button>
-          <button class="ghost-btn big" @click="refreshAgents">重新扫描本机 CLI</button>
-        </div>
-        <div class="hero-grid">
-          <button v-for="a in agents" :key="a.id" class="hero-card" :class="{off:!a.installed}" @click="openNew(a.id)">
-            <span class="hc-emoji">{{a.emoji}}</span>
-            <span class="hc-name">{{a.name}}</span>
-            <span class="hc-tag">{{a.installed ? verLabel(a) : '未安装 · 点击安装'}}</span>
-          </button>
-        </div>
+        <!-- 一个 CLI 都没有：给三步引导，而不是甩一排灰卡片 -->
+        <template v-if="!installedCount">
+          <div class="hero-badge warn">还没检测到任何 AI CLI</div>
+          <h1>三步就能<span class="grad">开始干活</span></h1>
+          <p>Baton 自己不调用模型，它驱动你本机已经装好的 AI CLI。<br/>先把其中一个装起来，剩下的交给 Baton。</p>
+
+          <div class="steps">
+            <div class="step">
+              <span class="step-no">1</span>
+              <div class="step-body">
+                <b>装一个 AI CLI</b>
+                <p>点下面的「复制」，把命令贴到终端执行；装完回来点最下方的「重新扫描」。</p>
+                <div class="cmd-list">
+                  <div v-for="a in quickStartCLIs" :key="a.id" class="cmd-row">
+                    <span class="cr-name">{{a.emoji}} {{a.name}}</span>
+                    <code>{{a.installCmd}}</code>
+                    <button class="mini" @click="copyText(a.installCmd)" title="复制命令">复制</button>
+                  </div>
+                  <div v-if="!quickStartCLIs.length" class="cmd-empty">这几个都需要手动下载，去官网装完再回来。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-no">2</span>
+              <div class="step-body">
+                <b>登录</b>
+                <p>多数 CLI 第一次运行会自己打开浏览器让你授权。如果新建 Bot 后发现它没登录，在会话里点「在窗口内登录」，不用另外开终端。</p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-no">3</span>
+              <div class="step-body">
+                <b>建第一个 Bot</b>
+                <p>给它起个名字、选个干活目录，就能派任务了。想让几个 Bot 互相配合，再建个群聊把它们拉进来。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-cta">
+            <button class="primary big" @click="refreshAgents">装好了，重新扫描</button>
+            <button class="ghost-btn big" @click="openExternal('https://github.com/m2lan/baton#readme')">看文档</button>
+          </div>
+        </template>
+
+        <!-- 已装了 CLI：正常入口 -->
+        <template v-else>
+          <div class="hero-badge">本机已安装 {{installedCount}} 个 AI CLI</div>
+          <h1>把你的 CLI，<span class="grad">变成一支 Bot 团队</span></h1>
+          <p>每个 Bot 绑定本机一个 AI CLI，拥有自己的工作目录和记忆。<br/>像给同事派活一样派任务，多个 Bot 可以同时干活。</p>
+          <div class="hero-cta">
+            <button class="primary big" @click="openNew()">＋ 新建一个 Bot</button>
+            <button class="ghost-btn big" @click="openGroupNew">👥 新建群聊</button>
+            <button class="ghost-btn big" @click="refreshAgents">重新扫描本机 CLI</button>
+          </div>
+          <div class="hero-grid">
+            <button v-for="a in agents" :key="a.id" class="hero-card" :class="{off:!a.installed}" @click="openNew(a.id)">
+              <span class="hc-emoji">{{a.emoji}}</span>
+              <span class="hc-name">{{a.name}}</span>
+              <span class="hc-tag">{{a.installed ? verLabel(a) : '未安装 · 点击安装'}}</span>
+            </button>
+          </div>
+        </template>
       </div>
 
       <!-- 消息 -->
@@ -209,7 +258,8 @@
                 <span v-if="m.duration">{{(m.duration/1000).toFixed(1)}}s</span>
                 <span v-if="m.meta?.cost">${{m.meta.cost.toFixed(4)}}</span>
                 <span v-if="m.meta?.stopped" class="warn">已手动停止</span>
-                <span v-if="m.status==='error'" class="err">执行失败</span>
+                <span v-if="m.meta?.timeout" class="warn">已超时停止</span>
+                <span v-if="m.status==='error' && !m.meta?.timeout" class="err">执行失败</span>
                 <button class="link-btn" @click="copy(m)">复制</button>
               </div>
             </div>
@@ -317,17 +367,21 @@
             <span class="cc-ver">{{verLabel(a)}}</span>
           </div>
 
-          <div class="col-label" style="margin-top:18px">可一键安装 <span>{{notInstalled.length}}</span></div>
+          <div class="col-label" style="margin-top:18px">未安装 <span>{{notInstalled.length}}</span></div>
           <div class="cli-card" v-for="a in notInstalled" :key="a.id" :class="{sel: form.agentId===a.id, dim:true}" @click="pickAgent(a)">
             <span class="cc-emoji" :style="{background:a.color+'22'}">{{a.emoji}}</span>
             <div class="cc-main">
               <b>{{a.name}}</b>
               <small>{{a.installHint || a.tag}}</small>
+              <code v-if="a.installCmd" class="cc-cmd" :title="a.installCmd">{{a.installCmd}}</code>
             </div>
-            <button v-if="a.installKind!=='manual'" class="install-btn" :disabled="!!installing[a.id]" @click.stop="install(a)">
-              {{installing[a.id] ? '安装中' : '安装'}}
-            </button>
-            <button v-else class="install-btn ghost" @click.stop="openExternal(a.docs)">官网</button>
+            <span class="cc-actions">
+              <button v-if="a.installCmd" class="mini" @click.stop="copyText(a.installCmd)" title="复制安装命令">复制</button>
+              <button v-if="a.installKind!=='manual'" class="install-btn" :disabled="!!installing[a.id]" @click.stop="install(a)">
+                {{installing[a.id] ? '安装中' : '安装'}}
+              </button>
+              <button v-else class="install-btn ghost" @click.stop="openExternal(a.docs)">官网</button>
+            </span>
           </div>
 
           <div v-if="installLog.length" class="install-log">

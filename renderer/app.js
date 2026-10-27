@@ -231,6 +231,10 @@ createApp({
     const installedAgents = computed(() => agents.value.filter((a) => a.installed));
     const notInstalled = computed(() => agents.value.filter((a) => !a.installed));
     const installedCount = computed(() => installedAgents.value.length);
+    // 首次引导里只列「有明确安装命令」的几个，避免一次甩出十几个把新用户淹掉
+    const quickStartCLIs = computed(() =>
+      agents.value.filter((a) => !a.installed && a.installCmd).slice(0, 4)
+    );
     const runningCount = computed(() => Object.keys(running).filter((k) => running[k]).length + Object.keys(roomBusy).filter((k) => roomBusy[k]).length);
     const messages = computed(() => chats[activeId.value] || []);
     const selectedAgent = computed(() => agents.value.find((a) => a.id === form.agentId) || null);
@@ -321,6 +325,10 @@ createApp({
     const copy = (m) => {
       const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text).join('\n');
       navigator.clipboard.writeText(text);
+    };
+    const copyText = (text) => {
+      if (!text) return;
+      navigator.clipboard.writeText(String(text));
     };
 
     // 群聊的 run key 是 gid:botId，消息归属还是 gid
@@ -969,7 +977,8 @@ createApp({
       openThink, openTool, stream, ta, form, perms, emojiList,
       active, filtered, installedAgents, notInstalled, installedCount, runningCount,
       messages, selectedAgent, canSave, permTip,
-      agentOf, avatarStyle, ago, shortPath, shortModel, verLabel, permLabel, toolPreview, copy,
+      agentOf, avatarStyle, ago, shortPath, shortModel, verLabel, permLabel, toolPreview, copy, copyText,
+      quickStartCLIs,
       select, refreshBots, refreshAgents, openNew, openEdit, closeModals, pickAgent,
       install, pickDir, save, removeBot, send, stop, clearChat, autoGrow, onKey, toggle,
       openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,

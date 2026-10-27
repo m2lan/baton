@@ -208,6 +208,40 @@ input, textarea, select { font: inherit; color: inherit; }
 .hc-name { font-size: 12.5px; font-weight: 600; }
 .hc-tag { font-size: 10.5px; color: var(--mute); }
 
+/* 首次引导：三步走 */
+.hero-badge.warn { color: #fbbf24; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.1); }
+.steps { text-align: left; margin: 0 0 28px; display: flex; flex-direction: column; gap: 11px; }
+.step {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 16px; border-radius: 13px;
+  background: linear-gradient(180deg, #12151c, #0d1016);
+  border: 1px solid var(--line);
+}
+.step-no {
+  flex: 0 0 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 11.5px; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, #6d5cff, #9d7bff);
+  box-shadow: 0 6px 14px -8px #7c6bff;
+}
+.step-body { flex: 1; min-width: 0; }
+.step-body > b { font-size: 13px; display: block; margin-bottom: 4px; }
+.step-body p { font-size: 11.5px; color: var(--sub); margin: 0; line-height: 1.75; }
+.cmd-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cmd-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: 8px;
+  background: #0a0d12; border: 1px solid var(--line);
+}
+.cr-name { font-size: 11px; color: var(--sub); white-space: nowrap; flex: 0 0 auto; }
+.cmd-row code {
+  flex: 1; min-width: 0; font-size: 10.5px; color: #9fe8c0;
+  font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: text; direction: ltr; text-align: left;
+}
+.cmd-empty { font-size: 11px; color: var(--mute); padding: 2px 0; }
+
 /* 消息 */
 .msg { max-width: 800px; margin: 0 auto 22px; padding: 0 30px; }
 .dayline { max-width: 800px; margin: 0 auto 20px; padding: 0 30px; display: flex; align-items: center; gap: 12px; color: var(--mute); font-size: 11px; }
@@ -413,6 +447,12 @@ input, textarea, select { font: inherit; color: inherit; }
 .cc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.35; }
 .cc-main b { font-size: 12px; }
 .cc-main small { font-size: 10px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-cmd {
+  font-size: 9.5px; color: #7fb8a0; font-family: var(--mono);
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: ltr; text-align: left; user-select: text;
+}
+.cc-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .cc-ver { font-size: 10px; color: var(--ok); font-family: var(--mono); }
 .install-btn { font-size: 11px; padding: 3px 9px; border-radius: 7px; background: rgba(124,107,255,.16); color: #c9c0ff; border: 1px solid rgba(124,107,255,.35); }
 .install-btn:hover { background: rgba(124,107,255,.28); }

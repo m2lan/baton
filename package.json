@@ -20,6 +20,7 @@
     "dev": "electron . --dev",
     "icon": "electron scripts/make-icon.js",
     "bench": "node scripts/bench-detect.js",
+    "ui:check": "node scripts/cdp-check.js",
     "pack": "node scripts/dist.js --dir",
     "dist": "node scripts/dist.js",
     "dist:win": "node scripts/dist.js --win",
