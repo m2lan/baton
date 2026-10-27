@@ -246,6 +246,58 @@ class Room {
     return mentioned[0] || null;
   }
 
+  /**
+   * 并发的前提：这几个人各自有独立工作目录。
+   * 共用目录时同时跑会互相覆盖文件，这种「快了但结果不可信」的加速没有意义。
+   */
+  canConcurrent(group, jobs) {
+    const bots = (jobs || []).map((j) => this.getBot(j.botId)).filter(Boolean);
+    if (bots.length < 2) return false;
+    const dirs = bots.map((b) => group.cwd || b.cwd || '');
+    if (dirs.some((d) => !d)) return false; // 没设目录会落到 home，同样会互相干扰
+    return new Set(dirs).size === dirs.length;
+  }
+
+  /** 跑一个 job，返回 {bot, msg}；失败返回 null（错误已经推进会话里了） */
+  async runJob(group, job, members, live) {
+    const bot = this.getBot(job.botId);
+    if (!bot) return null;
+    const agent = getAgent(bot.agentId);
+    if (!agent) {
+      this.pushSystem(group.id, `找不到 ${bot.name} 对应的 CLI 配置`);
+      return null;
+    }
+    if (!group.memberIds.includes(bot.id)) return null;
+
+    // 用户在这期间补充的要求，显式塞进本轮任务（光靠上下文层容易被当成背景信息忽略）
+    let jobText = job.text;
+    if (live.notes.length) {
+      jobText = `${job.text}\n\n【执行中用户补充】\n${live.notes.join('\n')}\n请先满足这些补充，再继续原来的任务。`;
+      live.notes = [];
+    }
+
+    const target = {
+      id: bot.id,
+      cwd: group.cwd || bot.cwd,
+      model: bot.model,
+      permission: bot.permission,
+      systemPrompt: bot.systemPrompt,
+      sessionId: (group.sessions && group.sessions[bot.id]) || '',
+    };
+    const prompt = this.buildPrompt(group, bot, { ...job, text: jobText }, members);
+
+    const r = await this.runner.run(target, agent, prompt, {
+      key: `${group.id}:${bot.id}`,
+      sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
+    });
+    if (!r.ok) {
+      this.pushSystem(group.id, `${bot.name} 启动失败：${r.error}`);
+      return null;
+    }
+    const msg = await r.done;
+    return { bot, msg };
+  }
+
   async send(group, userText, userMsg) {
     const members = this.members(group);
     if (!members.length) {
@@ -264,62 +316,62 @@ class Room {
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
     let turns = 0;
     const lastText = new Map(); // botId -> 上一轮的正文，用于识别原地打转
-    const live = { queue, notes: [], current: null, turn: 0 };
+    const live = { queue, notes: [], current: null, currentList: [], turn: 0 };
     this.live.set(group.id, live);
     this.emitState(group, { active: true, queue, turn: 0 });
 
     try {
+      /* ---------------- 第一批：只有「用户一次 @ 了多个 Bot」才可能并发 ---------------- */
+      // 交班链本身有依赖（后一个要读前一个的结论），所以永远串行；
+      // 能并发的只有开头这几个「互不依赖、并列被点名」的成员。
+      if (group.concurrent && queue.length > 1) {
+        if (this.canConcurrent(group, queue)) {
+          const batch = queue.splice(0, queue.length);
+          const bots = batch.map((j) => this.getBot(j.botId)).filter(Boolean);
+          live.currentList = bots;
+          live.turn = 1;
+          this.emitState(group, { active: true, currentList: bots, queue: [], turn: 1 });
+
+          const results = await Promise.all(batch.map((job) => this.runJob(group, job, members, live)));
+          live.currentList = [];
+
+          const handoffs = [];
+          for (const res of results) {
+            if (!res || this.aborted.has(group.id)) continue;
+            turns++;
+            const body = textOf(res.msg);
+            lastText.set(res.bot.id, body);
+            const next = this.pickHandoff(res.msg, group);
+            if (next && !queue.some((j) => j.botId === next) && !handoffs.includes(next)) handoffs.push(next);
+          }
+          // 并发跑完的几个人谁要交班，按顺序排进队列，后面照常串行接力
+          for (const id of handoffs) queue.push({ botId: id, text: userText, from: null });
+        } else {
+          this.pushSystem(
+            group.id,
+            '并发已开启，但这几个成员共用同一个工作目录，本轮仍按串行执行 —— 同时改同一目录会互相覆盖。'
+              + '给每个 Bot 设置各自独立的目录后才会真正并行。'
+          );
+        }
+      }
+
       while (queue.length && turns < MAX_TURNS && !this.aborted.has(group.id)) {
         const job = queue.shift();
         const bot = this.getBot(job.botId);
         if (!bot) continue;
-        const agent = getAgent(bot.agentId);
-        if (!agent) {
-          this.pushSystem(group.id, `找不到 ${bot.name} 对应的 CLI 配置`);
-          continue;
-        }
-
-        const fresh = group.memberIds.includes(bot.id);
-        if (!fresh) continue;
-
-        // 用户在这期间补充的要求，显式塞进本轮任务（光靠上下文层容易被当成背景信息忽略）
-        let jobText = job.text;
-        if (live.notes.length) {
-          jobText = `${job.text}\n\n【执行中用户补充】\n${live.notes.join('\n')}\n请先满足这些补充，再继续原来的任务。`;
-          live.notes = [];
-        }
         live.current = bot;
         live.turn = turns + 1;
 
         // 告诉界面：当前轮到谁，后面还排着谁
         this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
 
-        const target = {
-          id: bot.id,
-          cwd: group.cwd || bot.cwd,
-          model: bot.model,
-          permission: bot.permission,
-          systemPrompt: bot.systemPrompt,
-          sessionId: (group.sessions && group.sessions[bot.id]) || '',
-        };
-        const prompt = this.buildPrompt(group, bot, { ...job, text: jobText }, members);
-
-        const r = await this.runner.run(target, agent, prompt, {
-          key: `${group.id}:${bot.id}`,
-          sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
-        });
-
-        if (!r.ok) {
-          this.pushSystem(group.id, `${bot.name} 启动失败：${r.error}`);
-          continue;
-        }
-
-        const msg = await r.done;
+        const res = await this.runJob(group, job, members, live);
+        if (!res) continue;
         turns++;
         if (this.aborted.has(group.id)) break;
 
         // 原地打转：同一个 Bot 连续两次说的几乎一样，再排下去也只是烧 token
-        const body = textOf(msg);
+        const body = textOf(res.msg);
         const prev = lastText.get(bot.id);
         if (prev && body.length >= STALL_MIN_CHARS && similarity(prev, body) >= STALL_SIMILARITY) {
           this.pushSystem(
@@ -330,7 +382,7 @@ class Room {
         }
         lastText.set(bot.id, body);
 
-        const next = this.pickHandoff(msg, group);
+        const next = this.pickHandoff(res.msg, group);
         if (next) {
           // 去重：这个 Bot 已经排在队列里（比如用户一开始就 @ 了它），就不重复入队
           const alreadyQueued = queue.some((j) => j.botId === next);
@@ -351,18 +403,19 @@ class Room {
   /**
    * 广播群聊进度，让界面知道「谁在跑、还有谁排队」
    * @param {object} group
-   * @param {object} p {current: bot|null, queue: job[], turn: number}
+   * @param {object} p {current: bot|null, currentList: bot[], queue: job[], turn: number}
    */
   emitState(group, p = {}) {
     const brief = (b) => (b ? { id: b.id, name: b.name, emoji: b.emoji, color: b.color } : null);
-    const current = p.current ? brief(p.current) : null;
+    const list = (p.currentList || (p.current ? [p.current] : [])).map(brief).filter(Boolean);
     const queued = (p.queue || [])
       .map((j) => brief(this.getBot(j.botId)))
       .filter(Boolean);
     this.emit('room:state', {
       key: group.id,
-      active: p.active !== undefined ? !!p.active : !!current,
-      current,
+      active: p.active !== undefined ? !!p.active : list.length > 0,
+      current: list[0] || null,
+      currentList: list,
       queue: queued,
       turn: p.turn || 0,
       maxTurns: MAX_TURNS,

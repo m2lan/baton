@@ -444,6 +444,12 @@ input, textarea, select { font: inherit; color: inherit; }
 .tpl-err { margin-top: 8px; font-size: 11px; color: #f87171; }
 .tpl-or { margin: 12px 0 11px; font-size: 10.5px; color: #4b5361; text-align: center; }
 
+/* 开关行 */
+.sw-row { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-radius: 10px; background: #0d1016; border: 1px solid var(--line); cursor: pointer; }
+.sw-row input { margin-top: 2px; flex: 0 0 auto; accent-color: #7c6bff; cursor: pointer; }
+.sw-text { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.sw-text small { font-size: 10.5px; color: var(--mute); line-height: 1.65; }
+
 @media (max-width: 860px) {
   .modal-body.two { grid-template-columns: 1fr; gap: 14px; }
   .cli-col { border-right: 0; border-bottom: 1px solid var(--line); padding-right: 0; padding-bottom: 12px; }

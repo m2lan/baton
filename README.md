@@ -101,7 +101,9 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
 
 5. **You can cut in mid-run.** A message sent while the room is busy queues behind the current turn and gets read by the next Bot that takes over — no need to stop and start over. If the queue happened to be empty, the lead is asked to pick it up so your input never sits there unheard.
 
-While a room is busy, a bar above the composer shows **who is running and who is queued**, so you never have to guess which step you are on.
+6. **Concurrency is opt-in.** A room setting allows parallel runs, but it only applies to the step where **you mention several Bots at once** — handoff chains always stay serial, because each one reads the previous conclusion. It also **requires every member to have its own working directory**: if they share one, the room falls back to serial even with the setting on and says why, so two Bots never overwrite the same file at the same time.
+
+While a room is busy, a bar above the composer shows **who is running and who is queued** — in parallel mode it reads "mimo, hy4 running in parallel" — so you never have to guess which step you are on.
 
 Context: every Bot keeps its **own session** in the room (so it remembers its own work), and each prompt adds three layers of what it cannot see:
 

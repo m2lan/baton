@@ -289,10 +289,11 @@
     <footer v-if="active" class="composer">
       <!-- 群聊进度：谁在跑、后面还排着谁 -->
       <div v-if="active.kind==='group' && roomProgress[active.id]" class="queue-bar">
-        <span class="qb-current" v-if="roomProgress[active.id].current">
-          <span class="qb-dot" :style="{background: roomProgress[active.id].current.color}"></span>
-          <b>{{roomProgress[active.id].current.name}}</b>
-          <span class="qb-label">正在跑</span>
+        <span class="qb-current" v-if="roomProgress[active.id].currentList.length">
+          <span class="qb-dot" :style="{background: roomProgress[active.id].currentList[0].color}"></span>
+          <b v-if="roomProgress[active.id].currentList.length===1">{{roomProgress[active.id].currentList[0].name}}</b>
+          <b v-else>{{roomProgress[active.id].currentList.map(b=>b.name).join('、')}}</b>
+          <span class="qb-label">{{ roomProgress[active.id].currentList.length > 1 ? '并行中' : '正在跑' }}</span>
           <span class="qb-turn" v-if="roomProgress[active.id].maxTurns">第 {{roomProgress[active.id].turn}}/{{roomProgress[active.id].maxTurns}} 轮</span>
         </span>
         <span class="qb-next" v-if="roomProgress[active.id].queue.length">
@@ -602,6 +603,17 @@
                 {{b.emoji}} {{b.name}}
               </button>
             </div>
+          </div>
+
+          <div class="field">
+            <span>并发执行 <em>默认串行，最稳</em></span>
+            <label class="sw-row">
+              <input type="checkbox" v-model="groupForm.concurrent" />
+              <span class="sw-text">
+                允许并行
+                <small>只影响「你一次 @ 好几个 Bot」这一步；交班接力永远串行（后一个要读前一个的结论）。前提是每个成员有各自独立的目录 —— 共用目录时仍会自动退回串行，避免同时改同一份文件互相覆盖。</small>
+              </span>
+            </label>
           </div>
 
           <div class="form-foot">

@@ -231,6 +231,7 @@ function createGroup(cfg) {
     memberIds,
     leaderId: cfg.leaderId || memberIds[0],
     cwd: cfg.cwd || '',
+    concurrent: !!cfg.concurrent,
     sessions: {},
     createdAt: Date.now(),
     updatedAt: Date.now(),
