@@ -67,6 +67,7 @@ const netCfg = require('./net');
 const platform = require('./platform');
 const { Room, findMentions } = require('./room');
 const { getTemplate, buildPlan, listForUI } = require('./templates');
+const { buildMarkdown } = require('./export');
 
 // 调试用参数。打包后 Chromium 会对未知的 --xxx 直接报 "bad option" 退出，
 // 所以同时支持环境变量（LOCALBOT_SHOT / LOCALBOT_SHOT_JS …），CI 与打包版都能用。
@@ -492,6 +493,53 @@ function registerIpc() {
   });
 
   ipcMain.handle('chat:get', (_e, botId) => store.getMessages(botId));
+  ipcMain.handle('chat:export', async (_e, key) => {
+    const messages = store.getMessages(key) || [];
+    if (!messages.length) return { ok: false, error: '这个会话还没有内容' };
+
+    let payload;
+    if (isGroupKey(key)) {
+      const g = state.groups.find((x) => x.id === key);
+      if (!g) return { ok: false, error: '群聊不存在' };
+      payload = {
+        kind: 'group',
+        title: g.name,
+        group: {
+          ...g,
+          members: (g.memberIds || [])
+            .map((id) => state.bots.find((b) => b.id === id))
+            .filter(Boolean)
+            .map((b) => ({ name: b.name, agentName: (getAgent(b.agentId) || {}).name || b.agentId })),
+        },
+        messages,
+      };
+    } else {
+      const bot = state.bots.find((b) => b.id === key);
+      if (!bot) return { ok: false, error: 'Bot 不存在' };
+      payload = {
+        kind: 'bot',
+        title: bot.name,
+        bot,
+        agentName: (getAgent(bot.agentId) || {}).name || bot.agentId,
+        messages,
+      };
+    }
+
+    const { filename, markdown } = buildMarkdown(payload);
+    const r = await dialog.showSaveDialog(win, {
+      title: '导出会话',
+      defaultPath: path.join(app.getPath('downloads'), filename),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    try {
+      fs.writeFileSync(r.filePath, markdown, 'utf8');
+      return { ok: true, path: r.filePath, dir: path.dirname(r.filePath) };
+    } catch (e) {
+      return { ok: false, error: `写入失败：${e.message}` };
+    }
+  });
+
   ipcMain.handle('chat:clear', (_e, key) => {
     room.stop(key);
     runner.stop(key);

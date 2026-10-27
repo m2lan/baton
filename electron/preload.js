@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('lb', {
   send: (key, text) => invoke('chat:send', { key, text }),
   stop: (botId) => invoke('chat:stop', botId),
   clear: (botId) => invoke('chat:clear', botId),
+  exportChat: (key) => invoke('chat:export', key),
   pickDir: () => invoke('dialog:pickDir'),
   openExternal: (url) => invoke('shell:open', url),
   openFolder: (dir) => invoke('shell:openFolder', dir),

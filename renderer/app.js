@@ -599,8 +599,20 @@ createApp({
       if (active.value) window.lb.stop(active.value.id);
     }
 
-    async function clearChat() {
-      if (!active.value) return;
+    /** 导出当前会话为 Markdown，导出后打开所在文件夹 */
+    async function exportChat() {
+      const conv = active.value;
+      if (!conv) return;
+      const r = await window.lb.exportChat(conv.id);
+      if (r && r.ok) {
+        if (r.dir) window.lb.openFolder(r.dir);
+      } else if (r && !r.canceled) {
+        console.warn(r.error);
+        alert(r.error || '导出失败');
+      }
+    }
+
+    async function clearChat() {      if (!active.value) return;
       await window.lb.clear(active.value.id);
       chats[active.value.id] = [];
       const b = bots.value.find((x) => x.id === active.value.id);
@@ -1022,7 +1034,7 @@ createApp({
       agentOf, avatarStyle, ago, shortPath, shortModel, verLabel, permLabel, toolPreview, copy, copyText,
       quickStartCLIs,
       select, refreshBots, refreshAgents, openNew, openEdit, closeModals, pickAgent,
-      install, pickDir, save, removeBot, send, stop, clearChat, autoGrow, onKey, toggle,
+      install, pickDir, save, removeBot, send, stop, clearChat, exportChat, autoGrow, onKey, toggle,
       openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,
       term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,

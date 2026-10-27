@@ -56,7 +56,7 @@
 | # | 任务 | 现状 | 做什么 | 涉及文件 | 验收标准 |
 | --- | --- | --- | --- | --- | --- |
 | P1-1 | **界面 i18n** | ❌ 界面全中文，README 才是双语 | 抽出 `strings.js`，按系统语言自动切换，设置里可手动改 | 新增 `renderer/i18n.js`<br>全部 `renderer/*` | 英文系统默认英文界面，中文系统默认中文 |
-| P2-2 | **会话导出** | ❌ 聊天记录只能在应用里看 | 导出为 Markdown：每个 Bot 的发言 + 工具调用摘要，可直接贴进文档 | `electron/main.js`<br>`renderer/app.js` | 导出的 md 内容完整、格式可直接使用 |
+| ~~P2-2~~ | ~~**会话导出**~~ | ✅ **已完成** | 导出 Markdown：决策板置顶、正文原文、工具调用折叠进 `<details>`、思考过程不导出。会话头部「导出」按钮 → 保存对话框 | `electron/export.js`<br>`electron/main.js`<br>`renderer/index.html` | 实测真实会话 179KB → 11.5KB（6.4%），正文无损；空会话正确拒绝 |
 | P3-3 | **分发渠道**（可选） | ⚠️ 只有 GitHub Release | 上架 Windows 的 winget / scoop、macOS 的 Homebrew tap，让用户 `winget install baton` 就能装 | 新增 `packaging/` | 一条命令完成安装 |
 
 > 代码签名不在计划内。未签名包能正常安装和自动更新，只是首次运行多一步「仍要运行」提示，README 里已写明绕过方式。

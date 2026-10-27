@@ -145,6 +145,21 @@ Each role ships with a system prompt that states what it owns, what it does not 
 
 Templates live in `electron/templates.js`; adding one is just another entry in the array.
 
+## Exporting a conversation
+
+Both rooms and single Bots export to Markdown via the **Export** button in the conversation header.
+
+What you get is not a raw dump — it is already tidied up:
+
+- **The decision board comes first**, because it matters more than the transcript
+- **Prose is preserved verbatim**
+- **Tool calls collapse into `<details>`**, leaving one summary line each (`✅ Bash ls -la docs/`). This matters: a single real task can contain dozens of tool calls, and without folding they would bury the actual writing
+- **Reasoning traces are dropped** — long, and almost never worth keeping
+
+On one real session: 179 KB of raw record became 11.5 KB of Markdown (6.4%), with no prose lost.
+
+Good for archiving, sending to a colleague who does not have Baton, or pasting straight into project docs.
+
 ## Project layout
 
 ```
