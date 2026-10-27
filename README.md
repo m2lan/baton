@@ -113,6 +113,22 @@ The three layers never overlap: your messages only go in ①, in-window Bot repl
 
 A room can either share one working directory (recommended when they edit the same repo — otherwise one Bot literally cannot see the file another just changed) or let each Bot stay in its own.
 
+## Task templates
+
+When creating a room you can pick a template and get the whole crew in one click — no naming each Bot or writing role prompts by hand.
+
+| Template | Roles | Best for |
+| --- | --- | --- |
+| ✍️ Writing crew | Author / Reviewer / Reader | Docs, guides, external material |
+| 🔧 Code review | Implementer / Reviewer / Tester | Small changes that want a second pair of eyes |
+| 📐 Idea to ship | Product / Architect / Coder | One feature from idea to working code |
+
+Each role ships with a system prompt that states what it owns, what it does not own, and when to hand off. So you can just state the task and go.
+
+**How CLIs are assigned:** templates describe roles only, never a specific CLI. At creation time Baton assigns from whatever you have installed, and it **prefers putting each role on a different CLI** — half the value of multi-Bot work is different models catching each other's mistakes; piling everyone on the same CLI just becomes one model talking to itself. Reuse only happens when you have fewer CLIs than roles.
+
+Templates live in `electron/templates.js`; adding one is just another entry in the array.
+
 ## Project layout
 
 ```

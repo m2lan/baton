@@ -177,6 +177,9 @@ createApp({
     });
 
     const groupForm = reactive({ id: '', name: '', cwd: '', memberIds: [], leaderId: '' });
+    const templates = ref([]);
+    const creatingTpl = ref(false);
+    const tplError = ref('');
     const mention = reactive({ open: false, query: '', index: 0, list: [] });
 
     const perms = [
@@ -375,6 +378,7 @@ createApp({
         appInfo.platform = data.app.platform || '';
         if (data.app.update) Object.assign(updateState, data.app.update);
       }
+      window.lb.listTemplates().then((list) => (templates.value = list || [])).catch(() => {});
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
           running[chatKeyOf(payload.key)] = true;
@@ -726,6 +730,28 @@ createApp({
       if (dir) groupForm.cwd = dir;
     }
 
+    /** 从模板一键建群：会自动创建各个角色的 Bot，再组成群 */
+    async function useTemplate(t) {
+      if (creatingTpl.value) return;
+      creatingTpl.value = true;
+      tplError.value = '';
+      try {
+        const r = await window.lb.createFromTemplate({ templateId: t.id, cwd: groupForm.cwd.trim() });
+        if (!r || !r.ok) {
+          tplError.value = (r && r.error) || '创建失败';
+          return;
+        }
+        await refreshBots();
+        groupForm.id = '';
+        modal.value = null;
+        await select(r.group.id);
+      } catch (e) {
+        tplError.value = String((e && e.message) || e);
+      } finally {
+        creatingTpl.value = false;
+      }
+    }
+
     async function saveGroup() {
       if (!canSaveGroup.value) return;
       const patch = {
@@ -985,6 +1011,7 @@ createApp({
       term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
       saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos, roomProgress,
+      templates, creatingTpl, tplError, useTemplate,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,

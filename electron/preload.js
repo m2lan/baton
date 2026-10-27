@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('lb', {
   install: (id) => invoke('agents:install', id),
   createBot: (cfg) => invoke('bots:create', cfg),
   createGroup: (cfg) => invoke('groups:create', cfg),
+  listTemplates: () => invoke('templates:list'),
+  createFromTemplate: (payload) => invoke('templates:create', payload),
   updateGroup: (id, patch) => invoke('groups:update', id, patch),
   deleteGroup: (id) => invoke('groups:delete', id),
   updateBot: (id, patch) => invoke('bots:update', id, patch),

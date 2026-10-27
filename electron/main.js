@@ -66,6 +66,7 @@ const terminal = require('./pty');
 const netCfg = require('./net');
 const platform = require('./platform');
 const { Room, findMentions } = require('./room');
+const { getTemplate, buildPlan, listForUI } = require('./templates');
 
 // 调试用参数。打包后 Chromium 会对未知的 --xxx 直接报 "bad option" 退出，
 // 所以同时支持环境变量（LOCALBOT_SHOT / LOCALBOT_SHOT_JS …），CI 与打包版都能用。
@@ -424,11 +425,53 @@ function registerIpc() {
       }
     }
     persist();
+    emit('bots:update', state.bots);
     emit('rooms:update', state.groups);
     return true;
   });
 
   ipcMain.handle('groups:create', (_e, cfg) => createGroup(cfg));
+
+  /* ---------------- 任务模板 ---------------- */
+  ipcMain.handle('templates:list', () => listForUI());
+
+  ipcMain.handle('templates:create', async (_e, { templateId, cwd }) => {
+    const tpl = getTemplate(templateId);
+    if (!tpl) return { ok: false, error: '未知模板' };
+
+    // agentCache 可能还没检测完，兜底跑一次同步探测
+    let pool = agentCache;
+    if (!pool.length) pool = getDetector().fast(CATALOG);
+    const installed = pool.filter((a) => a.installed);
+    const plan = buildPlan(tpl, installed);
+    if (!plan.length) return { ok: false, error: '本机还没有安装任何 AI CLI，先装一个再试' };
+
+    // 每个角色建一个 Bot，systemPrompt 就是角色的职责描述
+    const bots = plan.map((p) =>
+      createBot({
+        name: p.role,
+        emoji: p.emoji,
+        color: p.color,
+        agentId: p.agent.id,
+        cwd: cwd || '',
+        systemPrompt: p.prompt,
+        permission: 'auto',
+      })
+    );
+
+    const group = createGroup({
+      name: tpl.name,
+      emoji: tpl.emoji,
+      memberIds: bots.map((b) => b.id), // plan 顺序 = 作者/审稿/读者
+      leaderId: bots[0].id,
+      cwd: cwd || '',
+    });
+
+    emit('bots:update', state.bots);
+    emit('rooms:update', state.groups);
+    return { ok: true, group, bots };
+  });
+
   ipcMain.handle('groups:update', (_e, id, patch) => {
     const g = updateGroup(id, patch);
     emit('rooms:update', state.groups);

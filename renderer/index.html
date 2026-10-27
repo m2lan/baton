@@ -539,6 +539,28 @@
         <button class="icon-btn" @click="modal=null">✕</button>
       </header>
 
+      <!-- 从模板一键组建：只在新建时出现 -->
+      <div v-if="!groupForm.id && templates.length" class="tpl-bar">
+        <div class="tpl-head">
+          <span>从模板一键组建</span>
+          <em>自动按角色创建 Bot，CLI 从本机已装的中挑</em>
+        </div>
+        <div class="tpl-list">
+          <button v-for="t in templates" :key="t.id" class="tpl-card" :disabled="creatingTpl" @click="useTemplate(t)">
+            <span class="tpl-emoji">{{t.emoji}}</span>
+            <span class="tpl-main">
+              <b>{{t.name}}</b>
+              <small>{{t.desc}}</small>
+            </span>
+            <span class="tpl-roles">
+              <span v-for="r in t.roles" :key="r.role" :title="r.role">{{r.emoji}}</span>
+            </span>
+          </button>
+        </div>
+        <div v-if="tplError" class="tpl-err">{{tplError}}</div>
+        <div class="tpl-or">或手动挑成员 ↓</div>
+      </div>
+
       <div class="modal-body">
         <div class="form-col">
           <div class="field-row">
