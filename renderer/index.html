@@ -237,6 +237,21 @@
 
     <!-- 输入框 -->
     <footer v-if="active" class="composer">
+      <!-- 群聊进度：谁在跑、后面还排着谁 -->
+      <div v-if="active.kind==='group' && roomProgress[active.id]" class="queue-bar">
+        <span class="qb-current" v-if="roomProgress[active.id].current">
+          <span class="qb-dot" :style="{background: roomProgress[active.id].current.color}"></span>
+          <b>{{roomProgress[active.id].current.name}}</b>
+          <span class="qb-label">正在跑</span>
+          <span class="qb-turn" v-if="roomProgress[active.id].maxTurns">第 {{roomProgress[active.id].turn}}/{{roomProgress[active.id].maxTurns}} 轮</span>
+        </span>
+        <span class="qb-next" v-if="roomProgress[active.id].queue.length">
+          <span class="qb-label">排队</span>
+          <span v-for="q in roomProgress[active.id].queue" :key="q.id" class="qb-chip" :title="q.name">{{q.emoji}} {{q.name}}</span>
+        </span>
+        <span class="qb-idle" v-else>说完就结束，除非它 @ 别人</span>
+      </div>
+
       <!-- @ 成员选择 -->
       <div v-if="mention.open && mention.list.length" class="mention-pop">
         <div v-for="(m, i) in mention.list" :key="m.id" class="mention-item" :class="{on: i===mention.index}" @mousedown.prevent="applyMention(m)">

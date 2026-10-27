@@ -93,10 +93,20 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
 
 1. **`@` addresses someone.** Whoever you mention answers, in order, serially — the next one sees what the previous one produced.
 2. **No mention → the lead answers.** Pick a lead in the room settings; it can `@` someone else if it needs help.
-3. **An `@` in a reply is a handoff.** That member gets woken up to continue.
-4. **At most 4 hops per turn, each Bot speaks once**, which prevents two Bots from volleying forever.
+3. **An `@` in a reply is a handoff.** That member gets woken up to continue. **The same Bot can take over repeatedly**, so a cycle like "draft → review → revise → re-review" runs itself to completion.
+4. **When it stops:** a reply that mentions nobody means the job is done, and the turn ends naturally. There is no per-Bot cap — only a 24-hop fuse against two Bots spinning forever.
 
-Context: every Bot keeps its **own session** inside the room, and each turn's prompt carries a digest of "what the others just said" (14 messages / 2400 chars). So it remembers its own work and knows what its teammates did.
+While a room is busy, a bar above the composer shows **who is running and who is queued**, so you never have to guess which step you are on.
+
+Context: every Bot keeps its **own session** in the room (so it remembers its own work), and each prompt adds three layers of what it cannot see:
+
+| Layer | Content | Budget | Why |
+| --- | --- | --- | --- |
+| ① Your requirements | Every message you sent | 1500 chars | Your messages are short and all signal — losing them derails the work |
+| ② Conclusions | The tail of each other Bot's last out-of-window reply, plus its `@` handoff line | 1600 chars | Conclusions land at the end; the process chatter in between can go |
+| ③ Recent turns | The last 10 messages in full | 3000 chars | Keeps the thread coherent |
+
+The three layers never overlap: your messages only go in ①, in-window Bot replies only in ③, and only out-of-window ones get summarised into ②. **Budget is allocated by importance, not by recency** — so no matter how long the thread gets, the requirement you stated at the start and the decisions made along the way are never pushed out.
 
 A room can either share one working directory (recommended when they edit the same repo — otherwise one Bot literally cannot see the file another just changed) or let each Bot stay in its own.
 

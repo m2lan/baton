@@ -153,6 +153,8 @@ createApp({
     const chats = reactive({});
     const running = reactive({});
     const roomBusy = reactive({});
+    // 群聊进度：{ [gid]: { current: bot, queue: bot[], turn, maxTurns } }
+    const roomProgress = reactive({});
     const query = ref('');
     const draft = ref('');
     const modal = ref(null);
@@ -379,6 +381,16 @@ createApp({
           refreshBots();
         } else if (channel === 'room:state') {
           roomBusy[payload.key] = !!payload.active;
+          if (payload.active) {
+            roomProgress[payload.key] = {
+              current: payload.current || null,
+              queue: payload.queue || [],
+              turn: payload.turn || 0,
+              maxTurns: payload.maxTurns || 0,
+            };
+          } else {
+            delete roomProgress[payload.key];
+          }
         } else if (channel === 'rooms:update') {
           groups.value = payload || [];
         } else if (channel === 'update:state') {
@@ -963,7 +975,7 @@ createApp({
       openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,
       term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
-      saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos,
+      saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos, roomProgress,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,

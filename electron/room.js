@@ -11,8 +11,12 @@
 const { getAgent } = require('./agents');
 
 const MAX_TURNS = 24;
-const CTX_MESSAGES = 14;
-const CTX_CHARS = 2400;
+// 上下文分三层预算：用户的每句话都是需求，不能丢；别人的发言只留结论 + 近期
+const CTX_BUDGET_ASK = 1500; // ① 用户需求锚点
+const CTX_BUDGET_DECISION = 1600; // ② 其他 Bot 的结论
+const CTX_BUDGET_RECENT = 3000; // ③ 近期完整对话
+const CTX_MSG_CHARS = 600; // 单条消息最多保留多少字
+const CTX_RECENT_MSGS = 10; // ③ 最多取最近几条
 
 function textOf(msg) {
   if (!msg || !msg.parts) return '';
@@ -71,7 +75,7 @@ class Room {
       if (key.startsWith(`${gid}:`)) this.runner.stop(key);
     }
     this.busy.delete(gid);
-    this.emit('room:state', { key: gid, active: false });
+    this.emit('room:state', { key: gid, active: false, current: null, queue: [] });
     return true;
   }
 
@@ -79,23 +83,87 @@ class Room {
     return (group.memberIds || []).map((id) => this.getBot(id)).filter(Boolean);
   }
 
-  /** 群聊里给某个 Bot 的历史上下文（别人说的话） */
+  /**
+   * 群聊上下文，按重要性分三层（不按时间一刀切）：
+   *   ① 用户说过的所有话 —— 都是需求，永不丢
+   *   ② 其他 Bot 的结论 —— 补「最近窗口之外」的发言，取末尾段落 + @ 交班行
+   *   ③ 最近若干条完整对话 —— 保证连贯
+   * 三层互不重复：用户消息只进 ①，窗口内的 Bot 消息只进 ③，窗口外的才进 ②。
+   * 自己说过的话不用带：每个 Bot 有自己的 session，--resume 时它自己记得。
+   * @returns {{asks: string[], decisions: string[], recent: string[]}}
+   */
   contextFor(group, bot) {
     const all = this.store.getMessages(group.id) || [];
-    const lines = [];
-    let chars = 0;
-    for (let i = all.length - 1; i >= 0 && lines.length < CTX_MESSAGES; i--) {
-      const m = all[i];
-      if (m.role === 'assistant' && m.sender && m.sender.id === bot.id) continue;
+    const isMine = (m) => m.role === 'assistant' && m.sender && m.sender.id === bot.id;
+    const who = (m) => (m.role === 'user' ? '用户' : (m.sender && m.sender.name) || '成员');
+    const clip = (s) => (s.length > CTX_MSG_CHARS ? s.slice(0, CTX_MSG_CHARS) + '…' : s);
+
+    /* ---- ① 用户需求锚点 ---- */
+    const asks = [];
+    let budget = CTX_BUDGET_ASK;
+    for (const m of all) {
+      if (m.role !== 'user') continue;
       const body = textOf(m);
       if (!body) continue;
-      const who = m.role === 'user' ? '用户' : (m.sender && m.sender.name) || '成员';
-      const line = `${who}: ${body.length > 400 ? body.slice(0, 400) + '…' : body}`;
-      if (chars + line.length > CTX_CHARS) break;
-      chars += line.length;
-      lines.unshift(line);
+      const line = `用户: ${clip(body)}`;
+      if (line.length > budget) break;
+      budget -= line.length;
+      asks.push(line);
     }
-    return lines;
+
+    /* ---- ③ 最近几条完整对话（先算，给 ② 做去重） ---- */
+    // 用户的话已经在 ① 里，这里不再重复；自己的话在自己的 session 里
+    const recent = [];
+    const covered = new Set();
+    budget = CTX_BUDGET_RECENT;
+    for (let i = all.length - 1; i >= 0 && recent.length < CTX_RECENT_MSGS; i--) {
+      const m = all[i];
+      if (isMine(m) || m.role === 'system' || m.role === 'user') continue;
+      const body = textOf(m);
+      if (!body) continue;
+      const line = `${who(m)}: ${clip(body)}`;
+      if (line.length > budget) break;
+      budget -= line.length;
+      recent.unshift(line);
+      covered.add(m.id);
+    }
+
+    /* ---- ② 其他 Bot 的结论 ---- */
+    // 只补「最近窗口之外」的发言：窗口内已经完整包含了，不用重复。
+    // 每个 Bot 取窗口外的最后一条，结论在最后一段，先保住它。
+    const lastOutside = new Map();
+    for (const m of all) {
+      if (m.role !== 'assistant' || !m.sender || isMine(m)) continue;
+      if (covered.has(m.id)) continue;
+      lastOutside.set(m.sender.id, m);
+    }
+    const others = [...lastOutside.values()].reverse(); // 最近说过话的优先
+    const perBot = Math.max(180, Math.floor(CTX_BUDGET_DECISION / Math.max(1, others.length)));
+    const decisions = [];
+    for (const m of others) {
+      const body = textOf(m);
+      if (!body) continue;
+      const paras = body.split(/\n{2,}/).filter(Boolean);
+      // 结论在最后一段，先保住它；预算还有富余，再从上一段末尾补一点上下文
+      const last = paras[paras.length - 1] || body;
+      let merged = last.length > perBot ? last.slice(0, perBot) + '…' : last;
+      const remain = perBot - merged.length;
+      if (remain > 60 && paras.length > 1) {
+        const prev = paras[paras.length - 2];
+        merged = `${prev.slice(-remain)}\n${merged}`;
+      }
+      // 末尾的 @ 交班行单独保留，不要被截断吃掉
+      const atLine = body
+        .split('\n')
+        .filter((l) => /@\S/.test(l))
+        .slice(-1)[0];
+      if (atLine && !merged.includes(atLine)) merged = `${merged}\n${atLine}`;
+      if (!merged.trim()) continue;
+      decisions.push(`${who(m)}: ${merged}`);
+    }
+    decisions.reverse();
+
+    return { asks, decisions, recent };
   }
 
   buildPrompt(group, bot, job, members) {
@@ -108,7 +176,9 @@ class Room {
     ];
 
     const ctx = this.contextFor(group, bot);
-    if (ctx.length) chunks.push(`【最近的群聊记录】\n${ctx.join('\n')}`);
+    if (ctx.asks.length) chunks.push(`【用户的需求】\n${ctx.asks.join('\n')}`);
+    if (ctx.decisions.length) chunks.push(`【其他人已经得出的结论】\n${ctx.decisions.join('\n')}`);
+    if (ctx.recent.length) chunks.push(`【最近的群聊记录】\n${ctx.recent.join('\n')}`);
 
     if (job.from) {
       const fromBot = this.getBot(job.from);
@@ -140,7 +210,6 @@ class Room {
 
     this.aborted.delete(group.id);
     this.busy.add(group.id);
-    this.emit('room:state', { key: group.id, active: true });
 
     const mentioned = findMentions(userText, members);
     const leader = group.leaderId || members[0].id;
@@ -148,6 +217,7 @@ class Room {
 
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
     let turns = 0;
+    this.emitState(group, { active: true, queue, turn: 0 });
 
     try {
       while (queue.length && turns < MAX_TURNS && !this.aborted.has(group.id)) {
@@ -162,6 +232,9 @@ class Room {
 
         const fresh = group.memberIds.includes(bot.id);
         if (!fresh) continue;
+
+        // 告诉界面：当前轮到谁，后面还排着谁
+        this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
 
         const target = {
           id: bot.id,
@@ -197,11 +270,32 @@ class Room {
     } finally {
       this.busy.delete(group.id);
       this.aborted.delete(group.id);
-      this.emit('room:state', { key: group.id, active: false });
+      this.emitState(group, { active: false });
       this.onChange(group.id);
     }
 
     return { ok: true };
+  }
+
+  /**
+   * 广播群聊进度，让界面知道「谁在跑、还有谁排队」
+   * @param {object} group
+   * @param {object} p {current: bot|null, queue: job[], turn: number}
+   */
+  emitState(group, p = {}) {
+    const brief = (b) => (b ? { id: b.id, name: b.name, emoji: b.emoji, color: b.color } : null);
+    const current = p.current ? brief(p.current) : null;
+    const queued = (p.queue || [])
+      .map((j) => brief(this.getBot(j.botId)))
+      .filter(Boolean);
+    this.emit('room:state', {
+      key: group.id,
+      active: p.active !== undefined ? !!p.active : !!current,
+      current,
+      queue: queued,
+      turn: p.turn || 0,
+      maxTurns: MAX_TURNS,
+    });
   }
 
   pushSystem(gid, text) {

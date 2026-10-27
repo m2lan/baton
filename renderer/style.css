@@ -335,6 +335,34 @@ input, textarea, select { font: inherit; color: inherit; }
 .square { width: 9px; height: 9px; background: #fff; border-radius: 2px; }
 .composer-hint { max-width: 800px; margin: 7px auto 0; text-align: center; font-size: 10.5px; color: #4b5361; }
 
+/* 群聊进度条：谁在跑、谁在排队 */
+.queue-bar {
+  max-width: 800px; margin: 0 auto 7px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 11px; border-radius: 10px;
+  background: linear-gradient(180deg, rgba(124,107,255,.09), rgba(124,107,255,.03));
+  border: 1px solid rgba(124,107,255,.22);
+  font-size: 11px; color: var(--text);
+  animation: qb-in .18s ease-out;
+}
+@keyframes qb-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.qb-current { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.qb-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px;
+  animation: qb-pulse 1.2s ease-in-out infinite;
+}
+@keyframes qb-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+.qb-current b { font-weight: 600; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qb-label { font-size: 10px; color: var(--mute); }
+.qb-turn { font-size: 10px; color: #7b8393; padding: 1px 6px; border-radius: 5px; background: #0d1016; border: 1px solid var(--line); }
+.qb-next { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+.qb-chip {
+  font-size: 10px; padding: 2px 7px; border-radius: 6px;
+  background: #0d1016; border: 1px solid var(--line); color: #9aa3b2;
+  white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis;
+}
+.qb-idle { font-size: 10px; color: #4b5361; }
+
 /* ================= 弹窗 ================= */
 .modal-wrap {
   position: fixed; inset: 0; z-index: 50;
