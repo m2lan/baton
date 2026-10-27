@@ -331,15 +331,18 @@
             <span class="chip" @click="openEdit(active)">🛡 {{permLabel(active.permission)}}</span>
             <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
           </div>
-          <button v-if="isBusy(active.id)" class="send stop" @click="stop" title="停止">
+          <button v-if="isBusy(active.id)" class="send stop" @click="stop" title="停止当前任务">
             <span class="square"></span>
           </button>
-          <button v-else class="send" :disabled="!draft.trim()" @click="send" title="发送">
+          <button class="send" :disabled="!draft.trim()" @click="send" :title="isBusy(active.id) ? '排到当前任务之后' : '发送'">
             <svg viewBox="0 0 24 24" class="ico"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>
           </button>
         </div>
       </div>
-      <div class="composer-hint" v-if="active.kind==='group'">Enter 发送 · @ 指定回答者 · 回答里 @ 别人会自动交班</div>
+      <div class="composer-hint" v-if="active.kind==='group'">
+        <template v-if="isBusy(active.id)">跑的时候也能发，会排到当前这一轮之后，由下一个接手的 Bot 读到</template>
+        <template v-else>Enter 发送 · @ 指定回答者 · 回答里 @ 别人会自动交班</template>
+      </div>
       <div class="composer-hint" v-else>Enter 发送 · Shift+Enter 换行 · 任务在本机 CLI 里真实执行</div>
     </footer>
   </main>

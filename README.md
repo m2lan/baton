@@ -99,6 +99,8 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
    - **No progress** — if the same Bot says essentially the same thing twice in a row, it counts as spinning and stops
    - **Hop limit** — 60 hops, purely an outer fuse
 
+5. **You can cut in mid-run.** A message sent while the room is busy queues behind the current turn and gets read by the next Bot that takes over — no need to stop and start over. If the queue happened to be empty, the lead is asked to pick it up so your input never sits there unheard.
+
 While a room is busy, a bar above the composer shows **who is running and who is queued**, so you never have to guess which step you are on.
 
 Context: every Bot keeps its **own session** in the room (so it remembers its own work), and each prompt adds three layers of what it cannot see:

@@ -214,7 +214,11 @@ createApp({
     const placeholder = computed(() => {
       const a = active.value;
       if (!a) return '';
-      if (isBusy(a.id)) return '正在干活，可以先去别的会话看看…';
+      if (isBusy(a.id)) {
+        return a.kind === 'group'
+          ? '补充要求？Enter 发送，当前这个跑完就轮到它读到'
+          : '补充要求？Enter 发送，会排在这轮之后';
+      }
       if (a.kind === 'group') return '在群里说点什么，@ 某个 Bot 让它回答';
       return `给 ${a.name} 派个活，Enter 发送`;
     });
@@ -575,7 +579,9 @@ createApp({
       const text = draft.value.trim();
       if (!text || !active.value) return;
       const conv = active.value;
-      if (isBusy(conv.id)) return;
+      // 群聊在跑的时候允许插话：消息会排到当前轮之后，由下一个接手的 Bot 读到。
+      // 单 Bot 没有队列概念，只能等这一轮结束。
+      if (isBusy(conv.id) && conv.kind !== 'group') return;
       mention.open = false;
       draft.value = '';
       autoGrow();
@@ -1010,7 +1016,7 @@ createApp({
       openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,
       term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
-      saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos, roomProgress,
+      saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos, roomProgress, roomBusy,
       templates, creatingTpl, tplError, useTemplate,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,

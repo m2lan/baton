@@ -89,10 +89,29 @@ class Room {
     this.onChange = onChange || (() => {});
     this.aborted = new Set();
     this.busy = new Set();
+    this.live = new Map(); // gid -> 当前轮次的可变状态（队列、插话），供中途介入用
   }
 
   isBusy(gid) {
     return this.busy.has(gid);
+  }
+
+  /**
+   * 跑的时候用户又说了话：挂到当前这一轮，不打断正在跑的 Bot。
+   * 消息已经存进会话了，所以下一个接手的 Bot 通过【用户的需求】那层天然能读到；
+   * 这里再做两件事：① 把它作为「补充要求」显式塞进下一次 prompt；
+   * ② 如果队列已经空了，补一个负责人接手，别让这条补充晾着没人管。
+   */
+  interject(group, text) {
+    const live = this.live.get(group.id);
+    if (!live) return { ok: false, error: '这个群正在跑上一轮' };
+    live.notes.push(text);
+    if (!live.queue.length) {
+      const leader = group.leaderId || (group.memberIds || [])[0];
+      if (leader) live.queue.push({ botId: leader, text, from: null });
+    }
+    this.emitState(group, { active: true, current: live.current, queue: live.queue, turn: live.turn });
+    return { ok: true, queued: true };
   }
 
   stop(gid) {
@@ -101,6 +120,7 @@ class Room {
       if (key.startsWith(`${gid}:`)) this.runner.stop(key);
     }
     this.busy.delete(gid);
+    this.live.delete(gid);
     this.emit('room:state', { key: gid, active: false, current: null, queue: [] });
     return true;
   }
@@ -232,7 +252,7 @@ class Room {
       this.pushSystem(group.id, '这个群还没有成员，先在群设置里加几个 Bot。');
       return { ok: false, error: '群聊没有成员' };
     }
-    if (this.busy.has(group.id)) return { ok: false, error: '这个群正在跑上一轮' };
+    if (this.busy.has(group.id)) return this.interject(group, userText);
 
     this.aborted.delete(group.id);
     this.busy.add(group.id);
@@ -244,6 +264,8 @@ class Room {
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
     let turns = 0;
     const lastText = new Map(); // botId -> 上一轮的正文，用于识别原地打转
+    const live = { queue, notes: [], current: null, turn: 0 };
+    this.live.set(group.id, live);
     this.emitState(group, { active: true, queue, turn: 0 });
 
     try {
@@ -260,6 +282,15 @@ class Room {
         const fresh = group.memberIds.includes(bot.id);
         if (!fresh) continue;
 
+        // 用户在这期间补充的要求，显式塞进本轮任务（光靠上下文层容易被当成背景信息忽略）
+        let jobText = job.text;
+        if (live.notes.length) {
+          jobText = `${job.text}\n\n【执行中用户补充】\n${live.notes.join('\n')}\n请先满足这些补充，再继续原来的任务。`;
+          live.notes = [];
+        }
+        live.current = bot;
+        live.turn = turns + 1;
+
         // 告诉界面：当前轮到谁，后面还排着谁
         this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
 
@@ -271,7 +302,7 @@ class Room {
           systemPrompt: bot.systemPrompt,
           sessionId: (group.sessions && group.sessions[bot.id]) || '',
         };
-        const prompt = this.buildPrompt(group, bot, job, members);
+        const prompt = this.buildPrompt(group, bot, { ...job, text: jobText }, members);
 
         const r = await this.runner.run(target, agent, prompt, {
           key: `${group.id}:${bot.id}`,
@@ -309,6 +340,7 @@ class Room {
     } finally {
       this.busy.delete(group.id);
       this.aborted.delete(group.id);
+      this.live.delete(group.id);
       this.emitState(group, { active: false });
       this.onChange(group.id);
     }
