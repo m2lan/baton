@@ -176,7 +176,7 @@ createApp({
       agentId: '', name: '', emoji: '🤖', cwd: '', model: '', permission: 'auto', systemPrompt: '', id: '',
     });
 
-    const groupForm = reactive({ id: '', name: '', cwd: '', memberIds: [], leaderId: '', concurrent: false });
+    const groupForm = reactive({ id: '', name: '', cwd: '', memberIds: [], leaderId: '', concurrent: false, decisionsText: '' });
     const templates = ref([]);
     const creatingTpl = ref(false);
     const tplError = ref('');
@@ -714,6 +714,7 @@ createApp({
       groupForm.memberIds = bots.value.slice(0, 2).map((b) => b.id);
       groupForm.leaderId = groupForm.memberIds[0] || '';
       groupForm.concurrent = false;
+      groupForm.decisionsText = '';
       modal.value = 'group';
     }
 
@@ -724,6 +725,7 @@ createApp({
       groupForm.memberIds = [...(group.memberIds || [])];
       groupForm.leaderId = group.leaderId || groupForm.memberIds[0] || '';
       groupForm.concurrent = !!group.concurrent;
+      groupForm.decisionsText = (group.decisions || []).join('\n');
       modal.value = 'group';
     }
 
@@ -769,6 +771,10 @@ createApp({
         memberIds: [...groupForm.memberIds],
         leaderId: groupForm.leaderId || groupForm.memberIds[0],
         concurrent: !!groupForm.concurrent,
+        decisions: groupForm.decisionsText
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean),
       };
       if (groupForm.id) {
         const g = await window.lb.updateGroup(groupForm.id, patch);

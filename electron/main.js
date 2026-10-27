@@ -232,6 +232,7 @@ function createGroup(cfg) {
     leaderId: cfg.leaderId || memberIds[0],
     cwd: cfg.cwd || '',
     concurrent: !!cfg.concurrent,
+    decisions: [], // 决策板：Bot 在回答里写【决策】xxx 自动并进来
     sessions: {},
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -352,7 +353,11 @@ const room = new Room({
   store,
   getBot: (id) => state.bots.find((b) => b.id === id),
   emit,
-  onChange: () => emit('rooms:update', state.groups),
+  onChange: () => {
+    // 群聊跑完可能更新了决策板 / 会话 id，需要落盘
+    persist();
+    emit('rooms:update', state.groups);
+  },
 });
 
 /* ---------------- IPC ---------------- */

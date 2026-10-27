@@ -15,6 +15,9 @@ const MAX_TURNS = 60;
 // 单轮超时已在 runner 里兜底，这里管的是「跑得动但没进展」。
 const STALL_SIMILARITY = 0.92;
 const STALL_MIN_CHARS = 20; // 太短的回复（如「同意」「收到」）不参与判定，避免误伤
+// 决策板：群里定下来的事，后续所有成员都读它，避免反复推翻
+const MAX_DECISIONS = 20;
+const DECISION_MERGE_SIM = 0.85; // 新决策和旧的太像，就当是修订，替换而不是追加
 // 上下文分三层预算：用户的每句话都是需求，不能丢；别人的发言只留结论 + 近期
 const CTX_BUDGET_ASK = 1500; // ① 用户需求锚点
 const CTX_BUDGET_DECISION = 1600; // ② 其他 Bot 的结论
@@ -29,6 +32,16 @@ function textOf(msg) {
     .map((p) => p.text)
     .join('\n')
     .trim();
+}
+
+/** 从 Bot 的回答里抽出「- 【决策】xxx」这样的行 */
+function extractDecisions(text) {
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const m = line.match(/^[\s>*\-]*【决策】\s*(.+?)\s*$/);
+    if (m && m[1]) out.push(m[1]);
+  }
+  return out;
 }
 
 /**
@@ -223,6 +236,16 @@ class Room {
 
     const ctx = this.contextFor(group, bot);
     if (ctx.asks.length) chunks.push(`【用户的需求】\n${ctx.asks.join('\n')}`);
+
+    // 决策板优先级高于零散结论：已经定下来的事不该被后来的成员推翻
+    const board = group.decisions || [];
+    if (board.length) {
+      chunks.push(
+        `【已经定下的决策】\n${board.map((d) => `- ${d}`).join('\n')}\n`
+          + '这些是前面已经拍板的，不要再推翻。如果确实需要改，先说明为什么必须改。'
+      );
+    }
+
     if (ctx.decisions.length) chunks.push(`【其他人已经得出的结论】\n${ctx.decisions.join('\n')}`);
     if (ctx.recent.length) chunks.push(`【最近的群聊记录】\n${ctx.recent.join('\n')}`);
 
@@ -233,6 +256,10 @@ class Room {
 
     chunks.push(`【本轮任务】\n${job.text}`);
     chunks.push('如果这件事需要别的成员接手，在回答最后单独一行写 `@成员名` 交班；不需要就不要 @ 任何人。');
+    chunks.push(
+      '如果你做出了会影响后续的结论（定了方案、定了技术栈、定了范围、定了取舍），'
+        + '在回答最后用单独一行写 `【决策】一句话说明`。没做出新决策就不用写，也不要把过程当决策写。'
+    );
 
     return chunks.filter(Boolean).join('\n\n');
   }
@@ -244,6 +271,33 @@ class Room {
     const members = this.members(group);
     const mentioned = findMentions(body, members);
     return mentioned[0] || null;
+  }
+
+  /**
+   * 把新决策并进决策板。
+   * 同一个决策经常被后来的成员「补充一点」—— 比如「技术栈用 Vue 3」之后变成
+   * 「技术栈用 Vue 3 + Pinia」。这种情况字符相似度只有 0.74，会漏判成两条互相矛盾的记录。
+   * 所以除了相似度，还用「一个是另一个的前缀/子串且长度接近」来认定是修订。
+   */
+  mergeDecisions(group, list) {
+    const board = group.decisions || (group.decisions = []);
+    const norm = (s) => String(s || '').replace(/\s+/g, '').toLowerCase();
+    for (const d of list || []) {
+      const text = String(d || '').trim();
+      if (!text) continue;
+      const nt = norm(text);
+      const idx = board.findIndex((x) => {
+        if (similarity(x, text) >= DECISION_MERGE_SIM) return true;
+        const nx = norm(x);
+        if (!nx || !nt) return false;
+        const [shorter, longer] = nx.length <= nt.length ? [nx, nt] : [nt, nx];
+        return longer.includes(shorter) && shorter.length / longer.length >= 0.5;
+      });
+      if (idx >= 0) board[idx] = text;
+      else board.push(text);
+    }
+    if (board.length > MAX_DECISIONS) board.splice(0, board.length - MAX_DECISIONS);
+    return board;
   }
 
   /**
@@ -341,6 +395,8 @@ class Room {
             turns++;
             const body = textOf(res.msg);
             lastText.set(res.bot.id, body);
+            const decided = extractDecisions(body);
+            if (decided.length) this.mergeDecisions(group, decided);
             const next = this.pickHandoff(res.msg, group);
             if (next && !queue.some((j) => j.botId === next) && !handoffs.includes(next)) handoffs.push(next);
           }
@@ -381,6 +437,9 @@ class Room {
           break;
         }
         lastText.set(bot.id, body);
+
+        const decided = extractDecisions(body);
+        if (decided.length) this.mergeDecisions(group, decided);
 
         const next = this.pickHandoff(res.msg, group);
         if (next) {

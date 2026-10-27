@@ -616,6 +616,13 @@
             </label>
           </div>
 
+          <div class="field" v-if="groupForm.id">
+            <span>决策板 <em>定下来的事，后续成员都会读到，不会被反复推翻</em></span>
+            <textarea class="dec-area" v-model="groupForm.decisionsText" rows="5"
+                      placeholder="还没有决策。Bot 在回答里写「【决策】xxx」时会自动记到这里。"></textarea>
+            <div class="dec-hint">一行一条，可以直接改或删。清空后保存即清空整个决策板。</div>
+          </div>
+
           <div class="form-foot">
             <button v-if="groupForm.id" class="danger-btn" @click="removeGroup">解散群聊</button>
             <span class="spacer"></span>

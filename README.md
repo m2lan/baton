@@ -115,6 +115,18 @@ Context: every Bot keeps its **own session** in the room (so it remembers its ow
 
 The three layers never overlap: your messages only go in ①, in-window Bot replies only in ③, and only out-of-window ones get summarised into ②. **Budget is allocated by importance, not by recency** — so no matter how long the thread gets, the requirement you stated at the start and the decisions made along the way are never pushed out.
 
+### Decision board
+
+On top of those three layers, every room keeps a **decision board**. When a Bot settles something (a stack, a scope, a trade-off) it ends its reply with a line like `【决策】one-line summary`. Baton collects those and every later member reads them, along with an instruction not to overturn them.
+
+This beats guessing which paragraph was "the conclusion" — having the model label it explicitly is far more reliable than heuristics applied afterwards.
+
+A few details:
+
+- **Revisions replace instead of piling up.** Changing "docs stay under 20 pages" to "30 pages" leaves only the new one; otherwise the board ends up holding two contradicting entries. Detection uses similarity plus "one is a substring of the other and they are close in length".
+- **The board is visible and editable in room settings.** If it recorded something wrong, or you changed your mind, edit or delete that line directly instead of arguing with the Bot.
+- **Capped at 20 entries**; the oldest drop off.
+
 A room can either share one working directory (recommended when they edit the same repo — otherwise one Bot literally cannot see the file another just changed) or let each Bot stay in its own.
 
 ## Task templates
