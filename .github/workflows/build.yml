@@ -8,19 +8,15 @@ name: Build & Release
 # 打 tag（v0.1.0）时，三个 job 会把产物 + latest.yml 一起发布到同一个 draft Release。
 # 你在 GitHub 上点「Publish release」之后，客户端才会检测到更新。
 #
-# Intel Mac（macos-13）默认不构建：GitHub 正在退役这批 runner，排队经常几十分钟起步，
-# 会把整个 run 拖住。需要时手动触发并勾上 build_intel。
+# Intel Mac 不在 CI 里构建：macos-13 runner 已经排不到，挂着的 job 会让整个 run 排队 24 小时后被取消。
+# Intel 包在本地 Intel Mac 上打（npm run dist:mac），上传到同一个 draft Release；
+# latest-mac.yml 要把 CI 的 arm64 条目和本地的 x64 条目合并成一份再上传，否则会互相覆盖、另一种架构收不到更新。
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      build_intel:
-        description: 同时构建 Intel Mac 包（macos-13 runner，排队可能很久）
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -41,11 +37,6 @@ jobs:
             os: macos-latest
             platform: mac
             arch: arm64
-          - name: macos-x64
-            os: macos-13
-            platform: mac
-            arch: x64
-            optional: true
           - name: linux-x64
             os: ubuntu-latest
             platform: linux
@@ -53,20 +44,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        if: ${{ !matrix.optional || inputs.build_intel == true }}
 
       - uses: actions/setup-node@v4
-        if: ${{ !matrix.optional || inputs.build_intel == true }}
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
-        if: ${{ !matrix.optional || inputs.build_intel == true }}
         run: npm ci
 
       - name: Build
-        if: ${{ !matrix.optional || inputs.build_intel == true }}
         shell: bash
         env:
           # 打 tag 才发布；手动触发默认只出包
@@ -84,7 +71,6 @@ jobs:
 
       # 无论是否发布，都留一份构建产物，方便排查
       - uses: actions/upload-artifact@v4
-        if: ${{ !matrix.optional || inputs.build_intel == true }}
         with:
           name: baton-${{ matrix.name }}
           path: |
