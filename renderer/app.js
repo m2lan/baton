@@ -146,6 +146,18 @@ createApp({
     const settings = ref({});
     // 界面语言偏好：'auto' 跟随系统，或 'zh' / 'en'
     const langPref = ref('auto');
+    // 外观：跟随系统 / 深色 / 浅色。实际生效的是 <html data-theme>，样式里按它切换
+    const themeOptions = ['system', 'dark', 'light'];
+    const themePref = ref('system');
+    const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    function applyTheme() {
+      const dark = themePref.value === 'dark' || (themePref.value === 'system' && darkQuery.matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      try {
+        localStorage.setItem('baton.theme', themePref.value); // 下次启动首帧就用，不闪
+      } catch {}
+    }
+    darkQuery.addEventListener('change', () => themePref.value === 'system' && applyTheme());
     const langOptions = window.I18N.LANGS;
     const langCode = computed(() => window.I18N.resolveLang(langPref.value));
     /** 模板里统一用 t('key')；读 langCode 会自动建立依赖，切语言即重渲染 */
@@ -451,6 +463,8 @@ createApp({
       agents.value = data.agents || [];
       settings.value = data.settings || {};
       if (settings.value.lang) langPref.value = settings.value.lang;
+      if (settings.value.theme) themePref.value = settings.value.theme;
+      applyTheme();
       applyProxySettings(settings.value.proxy);
       bots.value = data.bots || [];
       if (data.app) {
@@ -934,6 +948,13 @@ createApp({
       modal.value = null;
     }
 
+    /** 切换外观：立即生效；主进程同步窗口自身的深浅（标题栏、滚动条、系统控件） */
+    async function setTheme(v) {
+      themePref.value = v;
+      applyTheme();
+      settings.value = (await window.lb.saveSettings({ theme: v })) || settings.value;
+    }
+
     /** 切换界面语言：立即生效并落盘，不用重启 */
     async function setLang(v) {
       langPref.value = v;
@@ -1310,7 +1331,7 @@ createApp({
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
-      t, langPref, langCode, langOptions, setLang,
+      t, langPref, langCode, langOptions, setLang, themeOptions, themePref, setTheme,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
       liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub, liveTokens, followTokens,

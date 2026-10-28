@@ -90,6 +90,11 @@ const DICT = {
     // ---------- 设置 ----------
     'settings.lang': '界面语言',
     'settings.langHint': '切换后立即生效',
+    'settings.theme': '外观',
+    'settings.themeHint': '跟随系统时随 macOS / Windows 的深浅色自动切换',
+    'settings.theme.system': '跟随系统',
+    'settings.theme.dark': '深色',
+    'settings.theme.light': '浅色',
 
     // ---------- 通用 ----------
     'common.you': '你',
@@ -260,6 +265,11 @@ const DICT = {
     // ---------- settings ----------
     'settings.lang': 'Interface language',
     'settings.langHint': 'Applies immediately',
+    'settings.theme': 'Appearance',
+    'settings.themeHint': 'System follows the macOS / Windows light or dark setting',
+    'settings.theme.system': 'System',
+    'settings.theme.dark': 'Dark',
+    'settings.theme.light': 'Light',
 
     // ---------- common ----------
     'common.you': 'You',

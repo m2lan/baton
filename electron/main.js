@@ -737,6 +737,7 @@ function registerIpc() {
 
   ipcMain.handle('settings:save', (_e, patch) => {
     state.settings = { ...state.settings, ...patch };
+    if (patch.theme) nativeTheme.themeSource = patch.theme; // 窗口自身的深浅跟着界面走
     if (state.settings.proxy) {
       state.settings.proxy = { ...state.settings.proxy, v: 2 };
       netCfg.setConfig(state.settings.proxy);
@@ -765,7 +766,7 @@ function createWindow() {
     center: true,
     minWidth: 980,
     minHeight: 640,
-    backgroundColor: '#08090c',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#08090c' : '#f6f7f9',
     title: 'Baton',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     show: !SHOT,
@@ -834,7 +835,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  nativeTheme.themeSource = 'dark';
+  // 外观设置要在建窗口前生效：窗口底色、标题栏都跟它走（默认跟随系统）
+  nativeTheme.themeSource = (store.loadState().settings || {}).theme || 'system';
   if (process.platform === 'win32') app.setAppUserModelId('com.baton.app');
   // 旧版本叫 LocalBot，先迁移数据再让 store 读
   migrateLegacyData();

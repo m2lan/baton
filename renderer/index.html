@@ -3,6 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <title>Baton</title>
+  <script>
+    // 首帧之前就套上主题，避免浅色用户每次启动先闪一下深色
+    try {
+      var p = localStorage.getItem('baton.theme') || 'system';
+      var dark = p === 'dark' || (p === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -490,6 +498,13 @@
       </header>
       <div class="modal-body">
         <div class="form-col">
+          <div class="field">
+            <span>{{ t('settings.theme') }} <em>{{ t('settings.themeHint') }}</em></span>
+            <div class="seg">
+              <button v-for="o in themeOptions" :key="o" :class="{on: themePref===o}" @click="setTheme(o)">{{ t('settings.theme.' + o) }}</button>
+            </div>
+          </div>
+
           <div class="field">
             <span>{{ t('settings.lang') }} <em>{{ t('settings.langHint') }}</em></span>
             <div class="seg">
