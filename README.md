@@ -101,7 +101,11 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
 
 5. **You can cut in mid-run.** A message sent while the room is busy queues behind the current turn and gets read by the next Bot that takes over — no need to stop and start over. If the queue happened to be empty, the lead is asked to pick it up so your input never sits there unheard.
 
-6. **Concurrency is opt-in.** A room setting allows parallel runs, but it only applies to the step where **you mention several Bots at once** — handoff chains always stay serial, because each one reads the previous conclusion. It also **requires every member to have its own working directory**: if they share one, the room falls back to serial even with the setting on and says why, so two Bots never overwrite the same file at the same time.
+6. **Concurrency is opt-in.** A room setting allows parallel runs, but it only applies to the step where **you mention several Bots at once** — handoff chains always stay serial, because each one reads the previous conclusion. Members need separate places to work: either **each has its own working directory**, or **they share one git repository**, in which case each gets a temporary detached `git worktree`. When the batch finishes, every member's changes are applied back to the main directory as **uncommitted** changes. No branch or commit is created. If two members touched the same lines, the later patch is saved to `data/patches/` instead of being forced in. If they share a directory that is not a git repo, the room falls back to serial and says why.
+
+7. **Every handoff carries the file list.** When the working directory is a git repo, Baton snapshots the tree before and after each hop (into a temporary index, so your index and branches are untouched). The message shows "3 files changed", and the next Bot's prompt lists those files so a reviewer checks the files themselves, not just the previous Bot's summary.
+
+8. **Optional verify command.** Set one in room settings (e.g. `npm test`). When the handoff chain ends naturally, Baton runs it in the room's directory. If it fails, the output goes back to the lead (or a member you pick) to fix, and Baton re-runs it, up to 3 times by default. `BATON_VERIFY_TIMEOUT_MS` sets the per-run timeout (5 minutes by default).
 
 While a room is busy, a bar above the composer shows **who is running and who is queued** — in parallel mode it reads "mimo, hy4 running in parallel" — so you never have to guess which step you are on.
 
@@ -145,6 +149,25 @@ Each role ships with a system prompt that states what it owns, what it does not 
 
 Templates live in `electron/templates.js`; adding one is just another entry in the array.
 
+## Runs and usage
+
+The **Runs** button in the conversation header opens a record of every task. A task starts when you send a message and ends when the handoff chain it set off finishes:
+
+- **Per task:** hops, tokens, cost, and how it ended (done / verified / stalled / hop limit / stopped)
+- **Per hop:** who took over from whom, duration, tokens, cost, files changed, and **the exact prompt Baton sent to the CLI**, including the three context layers and the decision board. When a collaboration drifts, this shows what the Bot actually saw.
+- **Usage tab:** totals for today / 7 / 30 days / all time, broken down by Bot, by conversation, and by day
+
+Token counts are normalized across CLIs into input, output, and cache reads. Cache reads are listed separately because they are not billed at full rate. Cost is shown only for CLIs that report it (Claude Code, OpenCode). For the others the cost column shows "—".
+
+## Per-Bot environment variables
+
+Bot settings take `KEY=VALUE` lines that are injected when the CLI starts. The main use is pointing a Bot at a model gateway such as [magpie](https://github.com/yetone/magpie), so two Bots on the same CLI can run different models:
+
+```
+ANTHROPIC_BASE_URL=http://127.0.0.1:3425
+ANTHROPIC_API_KEY=magpie
+```
+
 ## Exporting a conversation
 
 Both rooms and single Bots export to Markdown via the **Export** button in the conversation header.
@@ -169,7 +192,9 @@ electron/
   parsers.js    each CLI's output protocol → unified events
   runner.js     process management, streaming assembly, session ids
   store.js      bots.json / chats/*.json persistence
-  room.js       group chat orchestration (@mentions, handoffs)
+  room.js       group chat orchestration (@mentions, handoffs, verify)
+  git.js        per-hop snapshots, worktree isolation for parallel runs
+  runlog.js     run log + usage aggregation (data/runs/*.json)
   pty.js        embedded terminal (node-pty sessions)
   detect.js     CLI detection (fast scan + background version fill)
   net.js        proxy policy per CLI

@@ -63,6 +63,23 @@
 
 ---
 
+## 阶段四：把协作过程变成看得见、管得住的
+
+**版本** 0.4 ｜ **目标** 用户能回答三个问题：这次花了多少、每个 Bot 当时看到了什么、做出来的东西到底对不对
+
+> 定位边界：模型路由、余额、协议转换是网关层（如 magpie）的事，Baton 不做。
+> Baton 只做网关看不到的那一层 —— 谁做了什么、交给了谁、改了哪些文件、做成没做成。
+
+| # | 任务 | 做什么 | 涉及文件 | 验收标准 |
+| --- | --- | --- | --- | --- |
+| P1-1 | **按任务汇总用量** | 各 CLI 的 usage 归一成 `{input, output, cacheRead}` + cost；每次任务（从用户发话到交班链结束）记一条，按任务 / Bot / 会话 / 近 N 天汇总 | `electron/parsers.js`<br>`electron/runlog.js`<br>`electron/room.js` | 一次三 Bot 协作后能看到总 token、费用和每个 Bot 的占比 |
+| P1-2 | **运行日志 + Prompt 检查器** | 每一跳记录：实际发出的完整 prompt、耗时、结束原因（完成 / 交班 / 超时 / 打转 / 跳数用完 / 停止）、改动的文件 | `electron/runlog.js`<br>`renderer/*` | 能打开任意一跳，看到那个 Bot 当时收到的三层上下文原文 |
+| P1-3 | **每一跳的文件改动 + worktree 并发** | 工作目录是 git 仓库时，每跳前后用临时 index 做快照（不动用户分支和暂存区），算出这一棒改了哪些文件，并写进交班 prompt。并发时成员共用同一仓库 → 自动给每人建 detached worktree，跑完把补丁以未提交改动的形式应用回主目录；冲突的补丁存档并提示 | `electron/git.js`<br>`electron/room.js` | 共用仓库也能真正并行；评审角色在 prompt 里看到上一棒改了哪些文件 |
+| P1-4 | **验收命令** | 群设置里可填验收命令（如 `npm test`）。交班链自然结束后自动执行，失败就把输出交回指定成员修复，最多重试 N 次 | `electron/room.js`<br>`renderer/*` | 测试不过 → 自动回修 → 通过后收尾；超过次数停下并说明 |
+| P2-5 | **Bot 环境变量覆盖** | Bot 设置里可写 `KEY=VALUE`，启动 CLI 时注入。可以用来接 magpie 之类的网关，让同一个 CLI 的不同 Bot 跑在不同模型上 | `electron/runner.js`<br>`renderer/*` | 设置 `ANTHROPIC_BASE_URL` 后该 Bot 的请求走指定网关 |
+
+---
+
 ## 明确不做
 
 | 不做 | 原因 |
