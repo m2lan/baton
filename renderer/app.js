@@ -340,9 +340,14 @@ createApp({
       const re = new RegExp('@(' + names.join('|') + ')', 'g');
       return raw.replace(re, '<span class="at">@$1</span>').replace(/\n/g, '<br>');
     };
+    // 复制后按钮短暂显示「已复制」，不然点了没反馈，不知道成没成功
+    const copied = reactive({});
     const copy = (m) => {
       const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text).join('\n');
-      navigator.clipboard.writeText(text);
+      navigator.clipboard.writeText(text).then(() => {
+        copied[m.id] = true;
+        setTimeout(() => delete copied[m.id], 1500);
+      }).catch(() => {});
     };
     const copyText = (text) => {
       if (!text) return;
@@ -1146,7 +1151,7 @@ createApp({
       openThink, openTool, stream, ta, form, perms, emojiList,
       active, filtered, installedAgents, notInstalled, installedCount, runningCount,
       messages, selectedAgent, canSave, permTip,
-      agentOf, avatarStyle, ago, shortPath, shortModel, verLabel, permLabel, toolPreview, copy, copyText,
+      agentOf, avatarStyle, ago, shortPath, shortModel, verLabel, permLabel, toolPreview, copy, copied, copyText,
       quickStartCLIs,
       select, refreshBots, refreshAgents, openNew, openEdit, closeModals, pickAgent,
       install, pickDir, save, removeBot, send, stop, clearChat, exportChat, autoGrow, onKey, toggle,

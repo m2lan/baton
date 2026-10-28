@@ -213,7 +213,12 @@
         <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
           <div v-if="m.role==='system'" class="sys-note">{{m.parts[0].text}}</div>
 
-          <div v-else-if="m.role==='user'" class="bubble user-bubble" v-html="renderUserText(m.parts[0].text)"></div>
+          <div v-else-if="m.role==='user'" class="user-wrap">
+            <div class="bubble user-bubble" v-html="renderUserText(m.parts[0].text)"></div>
+            <div class="user-foot">
+              <button class="link-btn" @click="copy(m)">{{ copied[m.id] ? t('common.copied') : t('common.copy') }}</button>
+            </div>
+          </div>
 
           <div v-else class="assistant">
             <div class="as-head">
@@ -268,7 +273,7 @@
                 <span v-if="m.meta?.stopped" class="warn">已手动停止</span>
                 <span v-if="m.meta?.timeout" class="warn">已超时停止</span>
                 <span v-if="m.status==='error' && !m.meta?.timeout" class="err">执行失败</span>
-                <button class="link-btn" @click="copy(m)">复制</button>
+                <button class="link-btn" @click="copy(m)">{{ copied[m.id] ? t('common.copied') : t('common.copy') }}</button>
               </div>
               <div v-if="openChanges[m.id] && m.meta?.changes?.length" class="chg-list">
                 <div v-for="c in m.meta.changes" :key="c.path" class="chg-row">

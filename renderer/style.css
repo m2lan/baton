@@ -248,8 +248,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .dayline::before, .dayline::after { content: ""; height: 1px; flex: 1; background: linear-gradient(90deg, transparent, var(--line), transparent); }
 
 .msg.user { display: flex; justify-content: flex-end; }
+.user-wrap { max-width: 78%; display: flex; flex-direction: column; align-items: flex-end; }
 .user-bubble {
-  max-width: 78%; white-space: pre-wrap; word-break: break-word;
+  max-width: 100%; white-space: pre-wrap; word-break: break-word;
+  user-select: text; cursor: text;
   padding: 10px 14px; border-radius: 16px 16px 5px 16px;
   background: linear-gradient(135deg, #6a57ff, #8f7bff);
   color: #fff; font-size: 13.5px; line-height: 1.7;
@@ -803,3 +805,9 @@ input, textarea, select { font: inherit; color: inherit; }
 /* .field input 的 width:100% 会把开关行里的复选框也撑满，这里还原 */
 .field .sw-row input[type="checkbox"] { width: auto; padding: 0; }
 .field .sw-row + .sw-row { margin-top: 6px; }
+
+/* 可选中：全局 user-select:none 只是为了别误选按钮和侧栏，内容区都要能选、能复制 */
+.sys-note, .tool-sec pre, .chg-list, .rt-text, .u-name { user-select: text; }
+.user-bubble::selection, .user-bubble *::selection { background: rgba(255,255,255,.85); color: #3b2fb0; }
+.user-foot { display: flex; height: 18px; margin-top: 3px; opacity: 0; transition: opacity .15s; }
+.msg.user:hover .user-foot, .user-foot:focus-within { opacity: 1; }
