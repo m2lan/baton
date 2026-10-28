@@ -12,11 +12,17 @@ const platform = require('./platform');
 const isWin = process.platform === 'win32';
 
 /**
- * 单轮运行上限：CLI 卡住时的兜底（等交互确认、网络挂起、内部死循环都会这样）。
- * 不设的话界面会一直转圈，用户只能强杀进程。
- * 可用 BATON_RUN_TIMEOUT_MS 覆盖，最低 30 秒。
+ * 卡住兜底分两层：
+ *   - 空闲超时：连续这么久没有任何输出才算卡住（等交互确认、网络挂起）。
+ *     只要还在出文字、调工具、思考，计时就清零 —— 真实任务跑十几分钟很正常，
+ *     按总时长一刀切会把正在干活的 CLI 杀掉（实测 5 分钟上限经常误杀）。
+ *   - 总时长上限：最外层保险丝，防止一直有输出但陷在死循环里。
+ * 分别用 BATON_IDLE_TIMEOUT_MS / BATON_RUN_TIMEOUT_MS 覆盖，最低 30 秒。
  */
-const RUN_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_RUN_TIMEOUT_MS) || 5 * 60 * 1000);
+const IDLE_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_IDLE_TIMEOUT_MS) || 10 * 60 * 1000);
+const RUN_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_RUN_TIMEOUT_MS) || 60 * 60 * 1000);
+
+const fmtSpan = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`);
 
 /* ---------------- 环境与可执行文件解析 ---------------- */
 let dirsCache = { at: 0, list: [] };
@@ -249,25 +255,34 @@ class Runner {
     this.emit('run:start', { key, msgId: msg.id });
 
     // 卡住兜底：到点强制收掉，并给出可读原因
-    ctx.timer = setTimeout(() => {
-      if (!this.running.has(key)) return;
+    const timeoutKill = (text) => {
+      if (!this.running.has(key) || ctx.timedOut) return;
       ctx.timedOut = true;
       ctx.dirty = true;
-      const label = RUN_TIMEOUT_MS >= 60000
-        ? `${Math.round(RUN_TIMEOUT_MS / 60000)} 分钟`
-        : `${Math.round(RUN_TIMEOUT_MS / 1000)} 秒`;
-      sink.error(
-        `${label}没有结束，已自动停止。`
-          + '如果是正常的超长任务，可以用 BATON_RUN_TIMEOUT_MS 调大上限。'
-      );
+      sink.error(text);
       killTree(child);
-    }, RUN_TIMEOUT_MS);
+    };
+    ctx.timer = setTimeout(
+      () => timeoutKill(`已经运行了 ${fmtSpan(RUN_TIMEOUT_MS)}，达到单轮上限，已自动停止。确实需要更久可以用 BATON_RUN_TIMEOUT_MS 调大。`),
+      RUN_TIMEOUT_MS
+    );
     if (ctx.timer.unref) ctx.timer.unref();
+    // 每次有输出就重新计时；只有一直没动静才判定卡住
+    ctx.touch = () => {
+      if (ctx.idleTimer) clearTimeout(ctx.idleTimer);
+      ctx.idleTimer = setTimeout(
+        () => timeoutKill(`连续 ${fmtSpan(IDLE_TIMEOUT_MS)}没有任何输出，判定为卡住，已自动停止。可以用 BATON_IDLE_TIMEOUT_MS 调大。`),
+        IDLE_TIMEOUT_MS
+      );
+      if (ctx.idleTimer.unref) ctx.idleTimer.unref();
+    };
+    ctx.touch();
 
     const parser = createParser(inv.proto, sink);
 
     let buf = '';
     child.stdout.on('data', (chunk) => {
+      ctx.touch();
       buf += chunk.toString('utf8');
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
@@ -416,6 +431,10 @@ class Runner {
   finish(key, ctx, code) {
     const msg = ctx.msg;
     this.running.delete(key);
+    if (ctx.idleTimer) {
+      clearTimeout(ctx.idleTimer);
+      ctx.idleTimer = null;
+    }
     if (ctx.timer) {
       clearTimeout(ctx.timer);
       ctx.timer = null;

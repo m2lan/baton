@@ -95,7 +95,7 @@ Put several Bots in one room. The rules are deliberately simple and predictable:
 2. **No mention → the lead answers.** Pick a lead in the room settings; it can `@` someone else if it needs help.
 3. **An `@` in a reply is a handoff.** That member gets woken up to continue. **The same Bot can take over repeatedly**, so a cycle like "draft → review → revise → re-review" runs itself to completion.
 4. **When it stops:** a reply that mentions nobody means the job is done, and the turn ends naturally. There is no per-Bot cap. Three fuses keep it from running away:
-   - **Per-run timeout** — a single call that exceeds 5 minutes is killed and explained (`BATON_RUN_TIMEOUT_MS` to change)
+   - **Stuck detection** — a call that produces no output at all for 10 minutes is killed and explained. Any text, tool call or reasoning resets the clock, so long but active runs are left alone (`BATON_IDLE_TIMEOUT_MS`). A 60-minute hard cap per call is the outer fuse (`BATON_RUN_TIMEOUT_MS`)
    - **No progress** — if the same Bot says essentially the same thing twice in a row, it counts as spinning and stops
    - **Hop limit** — 60 hops, purely an outer fuse
 
