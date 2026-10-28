@@ -8,6 +8,7 @@ const { createParser, stripAnsi, normUsage } = require('./parsers');
 const { buildInvocation } = require('./agents');
 const proxy = require('./net');
 const platform = require('./platform');
+const { L } = require('./lang');
 
 const isWin = process.platform === 'win32';
 
@@ -22,7 +23,7 @@ const isWin = process.platform === 'win32';
 const IDLE_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_IDLE_TIMEOUT_MS) || 10 * 60 * 1000);
 const RUN_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_RUN_TIMEOUT_MS) || 60 * 60 * 1000);
 
-const fmtSpan = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`);
+const fmtSpan = (ms) => (ms >= 60000 ? L(`${Math.round(ms / 60000)} 分钟`, `${Math.round(ms / 60000)} min`) : L(`${Math.round(ms / 1000)} 秒`, `${Math.round(ms / 1000)} s`));
 
 /* ---------------- 环境与可执行文件解析 ---------------- */
 let dirsCache = { at: 0, list: [] };
@@ -212,12 +213,12 @@ class Runner {
    */
   async run(target, agent, prompt, opts = {}) {
     const key = opts.key || target.id;
-    if (this.running.has(key)) return { ok: false, error: '正在执行上一条任务' };
-    if (!agent) return { ok: false, error: '找不到对应的 CLI 配置' };
+    if (this.running.has(key)) return { ok: false, error: L('正在执行上一条任务', 'Still running the previous task') };
+    if (!agent) return { ok: false, error: L('找不到对应的 CLI 配置', 'No matching CLI config') };
 
     const resolved = resolveBin(agent.bin);
     if (!resolved) {
-      return { ok: false, error: `本机没有找到 ${agent.name}（${agent.bin}），请先安装或检查 PATH` };
+      return { ok: false, error: L(`本机没有找到 ${agent.name}（${agent.bin}），请先安装或检查 PATH`, `${agent.name} (${agent.bin}) was not found on this machine — install it or check PATH`) };
     }
 
     const cwd = target.cwd && fs.existsSync(target.cwd) ? target.cwd : os.homedir();
@@ -248,7 +249,7 @@ class Runner {
     try {
       child = spawnCli(resolved, inv.args, { cwd, agentId: agent.id, env: parseEnv(target.env) });
     } catch (e) {
-      return { ok: false, error: `启动失败：${e.message}` };
+      return { ok: false, error: L(`启动失败：${e.message}`, `Failed to start: ${e.message}`) };
     }
     ctx.child = child;
     this.running.set(key, ctx);
@@ -263,7 +264,10 @@ class Runner {
       killTree(child);
     };
     ctx.timer = setTimeout(
-      () => timeoutKill(`已经运行了 ${fmtSpan(RUN_TIMEOUT_MS)}，达到单轮上限，已自动停止。确实需要更久可以用 BATON_RUN_TIMEOUT_MS 调大。`),
+      () => timeoutKill(L(
+        `已经运行了 ${fmtSpan(RUN_TIMEOUT_MS)}，达到单轮上限，已自动停止。确实需要更久可以用 BATON_RUN_TIMEOUT_MS 调大。`,
+        `Ran for ${fmtSpan(RUN_TIMEOUT_MS)}, the per-turn limit, and was stopped. Raise BATON_RUN_TIMEOUT_MS if it really needs longer.`
+      )),
       RUN_TIMEOUT_MS
     );
     if (ctx.timer.unref) ctx.timer.unref();
@@ -271,7 +275,10 @@ class Runner {
     ctx.touch = () => {
       if (ctx.idleTimer) clearTimeout(ctx.idleTimer);
       ctx.idleTimer = setTimeout(
-        () => timeoutKill(`连续 ${fmtSpan(IDLE_TIMEOUT_MS)}没有任何输出，判定为卡住，已自动停止。可以用 BATON_IDLE_TIMEOUT_MS 调大。`),
+        () => timeoutKill(L(
+          `连续 ${fmtSpan(IDLE_TIMEOUT_MS)}没有任何输出，判定为卡住，已自动停止。可以用 BATON_IDLE_TIMEOUT_MS 调大。`,
+          `No output at all for ${fmtSpan(IDLE_TIMEOUT_MS)} — treated as stuck and stopped. Raise BATON_IDLE_TIMEOUT_MS if needed.`
+        )),
         IDLE_TIMEOUT_MS
       );
       if (ctx.idleTimer.unref) ctx.idleTimer.unref();
@@ -306,7 +313,7 @@ class Runner {
     });
 
     child.on('error', (err) => {
-      sink.error(`启动失败：${err.message}`);
+      sink.error(L(`启动失败：${err.message}`, `Failed to start: ${err.message}`));
       this.finish(key, ctx, 1);
     });
 
@@ -470,7 +477,7 @@ class Runner {
 
     const errText = stripAnsi(ctx.stderr.join('')).trim();
     if (!msg.error && code !== 0 && !ctx.stopped) {
-      msg.error = errText.slice(-1200) || `进程退出码 ${code}`;
+      msg.error = errText.slice(-1200) || L(`进程退出码 ${code}`, `Process exited with code ${code}`);
       if (AUTH_HINT.test(msg.error)) msg.meta = { ...(msg.meta || {}), authError: true };
     }
     if (ctx.stopped) msg.meta = { ...(msg.meta || {}), stopped: true };
@@ -485,7 +492,7 @@ class Runner {
       msg.parts.push({ type: 'text', text: msg.error });
     }
     if (!msg.parts.length) {
-      msg.parts.push({ type: 'text', text: ctx.stopped ? '（已停止）' : '（没有输出）' });
+      msg.parts.push({ type: 'text', text: ctx.stopped ? L('（已停止）', '(stopped)') : L('（没有输出）', '(no output)') });
     }
     msg.status = msg.error && !ctx.stopped ? 'error' : 'done';
     msg.finishedAt = Date.now();

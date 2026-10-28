@@ -206,20 +206,20 @@
           <p>
             <span v-for="m in active.members" :key="m.id" class="ce-member">{{m.emoji}} {{m.name}}</span>
           </p>
-          <p>直接说需求，默认由「{{leaderName}}」先接；想指定人就 @ 它，回答里 @ 别人即自动交班。</p>
+          <p>{{ t('empty.groupHint', {name: leaderName}) }}</p>
           <div class="ce-chips">
-            <button v-for="m in active.members.slice(0,4)" :key="m.id" @click="useStarter('@' + m.name + ' ')">@{{m.name}} 先看一下</button>
+            <button v-for="m in active.members.slice(0,4)" :key="m.id" @click="useStarter('@' + m.name + ' ')">{{ t('empty.atStarter', {name: m.name}) }}</button>
           </div>
         </div>
         <div v-else-if="!messages.length" class="chat-empty">
           <div class="ce-avatar" :style="avatarStyle(active)">{{active.emoji}}</div>
-          <div class="ce-title">{{active.name}} 准备好了</div>
-          <p>它在 <b>{{shortPath(active.cwd)}}</b> 里干活，用的是 {{agentOf(active)?.name}}{{agentOf(active)?.version ? ' v'+agentOf(active).version : ''}}</p>
+          <div class="ce-title">{{ t('empty.ready', {name: active.name}) }}</div>
+          <p>{{ t('empty.worksIn') }} <b>{{shortPath(active.cwd)}}</b> · {{agentOf(active)?.name}}{{agentOf(active)?.version ? ' v'+agentOf(active).version : ''}}</p>
           <div class="ce-chips">
             <button v-for="s in starters" :key="s" @click="useStarter(s)">{{s}}</button>
           </div>
         </div>
-        <div v-else class="dayline"><span>{{active.name}} 的会话</span></div>
+        <div v-else class="dayline"><span>{{ t('chat.dayline', {name: active.name}) }}</span></div>
 
         <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
           <div v-if="m.role==='system'" class="sys-note">{{m.parts[0].text}}</div>
@@ -244,8 +244,8 @@
                 <div v-if="p.type==='thinking'" class="thinking" :class="{open: openThink[m.id+'_'+i]}" @click="toggle('think', m.id, i)">
                   <div class="think-head">
                     <span class="think-ic">✳</span>
-                    <span>思考过程</span>
-                    <span class="think-more">{{openThink[m.id+'_'+i] ? '收起' : '展开'}}</span>
+                    <span>{{ t('msg.thinking') }}</span>
+                    <span class="think-more">{{openThink[m.id+'_'+i] ? t('common.collapse') : t('common.expand')}}</span>
                   </div>
                   <div v-if="openThink[m.id+'_'+i]" class="think-body">{{p.text}}</div>
                 </div>
@@ -255,11 +255,11 @@
                     <span class="tool-ic">🛠</span>
                     <span class="tool-name">{{p.name}}</span>
                     <span class="tool-preview">{{toolPreview(p)}}</span>
-                    <span class="tool-state">{{p.status==='running' ? '执行中' : p.status==='error' ? '失败' : '完成'}}</span>
+                    <span class="tool-state">{{p.status==='running' ? t('tool.running') : p.status==='error' ? t('tool.error') : t('tool.done')}}</span>
                   </div>
                   <div v-if="openTool[m.id+'_'+i]" class="tool-body">
-                    <div v-if="p.input" class="tool-sec"><em>输入</em><pre>{{p.input}}</pre></div>
-                    <div v-if="p.result" class="tool-sec"><em>输出</em><pre>{{p.result}}</pre></div>
+                    <div v-if="p.input" class="tool-sec"><em>{{ t('tool.input') }}</em><pre>{{p.input}}</pre></div>
+                    <div v-if="p.result" class="tool-sec"><em>{{ t('tool.output') }}</em><pre>{{p.result}}</pre></div>
                   </div>
                 </div>
 
@@ -267,8 +267,8 @@
               </template>
 
               <div v-if="m.meta?.authError" class="auth-tip">
-                <span>{{m.sender ? m.sender.name : agentOf(active)?.name}} 还没登录，可以直接在窗口里完成授权。</span>
-                <button class="primary small" @click="openTermFor(m)">在窗口内登录</button>
+                <span>{{ t('msg.authTip', {name: m.sender ? m.sender.name : agentOf(active)?.name}) }}</span>
+                <button class="primary small" @click="openTermFor(m)">{{ t('msg.loginHere') }}</button>
               </div>
 
               <div v-if="m.status!=='streaming'" class="as-foot">
@@ -281,9 +281,9 @@
                 <button v-if="m.meta?.changes?.length" class="chg-btn" @click="openChanges[m.id] = !openChanges[m.id]">
                   {{ t('msg.changes', {n: m.meta.changes.length}) }} {{openChanges[m.id] ? '▾' : '▸'}}
                 </button>
-                <span v-if="m.meta?.stopped" class="warn">已手动停止</span>
-                <span v-if="m.meta?.timeout" class="warn">已超时停止</span>
-                <span v-if="m.status==='error' && !m.meta?.timeout" class="err">执行失败</span>
+                <span v-if="m.meta?.stopped" class="warn">{{ t('common.stopped') }}</span>
+                <span v-if="m.meta?.timeout" class="warn">{{ t('common.timeout') }}</span>
+                <span v-if="m.status==='error' && !m.meta?.timeout" class="err">{{ t('common.failed') }}</span>
                 <button class="link-btn" @click="copy(m)">{{ copied[m.id] ? t('common.copied') : t('common.copy') }}</button>
               </div>
               <div v-if="openChanges[m.id] && m.meta?.changes?.length" class="chg-list">
@@ -303,12 +303,12 @@
         <span class="term-dot"></span>
         <b>{{term.title}}</b>
         <span class="term-cwd">{{shortPath(term.cwd)}}</span>
-        <span class="term-hint" v-if="term.mode==='login'">在终端里完成授权，然后关掉面板重发消息</span>
+        <span class="term-hint" v-if="term.mode==='login'">{{ t('term.loginHint') }}</span>
         <span class="term-hint err" v-if="term.err">{{term.err}}</span>
-        <button class="ghost-btn acc" v-if="term.netHint" @click="useDirect" title="只对这个 CLI 生效">仅此 CLI 改直连</button>
-        <button class="ghost-btn acc" v-if="term.slashLogin" @click="sendSlashLogin">输入 /login</button>
-        <button class="ghost-btn" @click="restartTerm">重启</button>
-        <button class="ghost-btn" @click="openTerminal(active, term.mode==='login')">系统终端</button>
+        <button class="ghost-btn acc" v-if="term.netHint" @click="useDirect" :title="t('term.directTip')">{{ t('term.direct') }}</button>
+        <button class="ghost-btn acc" v-if="term.slashLogin" @click="sendSlashLogin">{{ t('term.slashLogin') }}</button>
+        <button class="ghost-btn" @click="restartTerm">{{ t('term.restart') }}</button>
+        <button class="ghost-btn" @click="openTerminal(active, term.mode==='login')">{{ t('term.system') }}</button>
         <button class="icon-btn" @click="closeTerm">✕</button>
       </header>
       <div class="term-body" ref="termEl"></div>
@@ -388,43 +388,43 @@
     <div class="modal" :class="{wide: modal==='new'}">
       <header class="modal-head">
         <div>
-          <h2>{{modal==='new' ? '新建 Bot' : 'Bot 设置'}}</h2>
-          <p>{{modal==='new' ? '选一个本机 CLI 作为它的“大脑”' : '调整这个 Bot 的工作方式'}}</p>
+          <h2>{{modal==='new' ? t('bot.newTitle') : t('bot.editTitle')}}</h2>
+          <p>{{modal==='new' ? t('bot.newSub') : t('bot.editSub')}}</p>
         </div>
         <button class="icon-btn" @click="modal=null">✕</button>
       </header>
 
       <div class="modal-body" :class="{two: modal==='new'}">
         <div v-if="modal==='new'" class="cli-col">
-          <div class="col-label">已安装 <span>{{installedAgents.length}}</span></div>
+          <div class="col-label">{{ t('bot.installed') }} <span>{{installedAgents.length}}</span></div>
           <div class="cli-card" v-for="a in installedAgents" :key="a.id" :class="{sel: form.agentId===a.id}" @click="pickAgent(a)">
             <span class="cc-emoji" :style="{background:a.color+'22'}">{{a.emoji}}</span>
             <div class="cc-main">
               <b>{{a.name}}</b>
-              <small>{{a.tag}}</small>
+              <small>{{loc(a, 'tag')}}</small>
             </div>
             <span class="cc-ver">{{verLabel(a)}}</span>
           </div>
 
-          <div class="col-label" style="margin-top:18px">未安装 <span>{{notInstalled.length}}</span></div>
+          <div class="col-label" style="margin-top:18px">{{ t('bot.notInstalled') }} <span>{{notInstalled.length}}</span></div>
           <div class="cli-card" v-for="a in notInstalled" :key="a.id" :class="{sel: form.agentId===a.id, dim:true}" @click="pickAgent(a)">
             <span class="cc-emoji" :style="{background:a.color+'22'}">{{a.emoji}}</span>
             <div class="cc-main">
               <b>{{a.name}}</b>
-              <small>{{a.installHint || a.tag}}</small>
+              <small>{{a.installHint || loc(a, 'tag')}}</small>
               <code v-if="a.installCmd" class="cc-cmd" :title="a.installCmd">{{a.installCmd}}</code>
             </div>
             <span class="cc-actions">
-              <button v-if="a.installCmd" class="mini" @click.stop="copyText(a.installCmd)" title="复制安装命令">复制</button>
+              <button v-if="a.installCmd" class="mini" @click.stop="copyText(a.installCmd)" :title="t('bot.copyInstall')">{{ t('common.copy') }}</button>
               <button v-if="a.installKind!=='manual'" class="install-btn" :disabled="!!installing[a.id]" @click.stop="install(a)">
-                {{installing[a.id] ? '安装中' : '安装'}}
+                {{installing[a.id] ? t('bot.installing') : t('bot.install')}}
               </button>
-              <button v-else class="install-btn ghost" @click.stop="openExternal(a.docs)">官网</button>
+              <button v-else class="install-btn ghost" @click.stop="openExternal(a.docs)">{{ t('bot.website') }}</button>
             </span>
           </div>
 
           <div v-if="installLog.length" class="install-log">
-            <div class="il-head">安装日志<button class="mini" @click="installLog=[]">清空</button></div>
+            <div class="il-head">{{ t('bot.installLog') }}<button class="mini" @click="installLog=[]">{{ t('head.clear') }}</button></div>
             <pre>{{installLog.join('\n')}}</pre>
           </div>
         </div>
@@ -432,12 +432,12 @@
         <div class="form-col">
           <div class="field-row">
             <label class="field">
-              <span>名字</span>
-              <input v-model="form.name" placeholder="给它起个名字" />
+              <span>{{ t('bot.name') }}</span>
+              <input v-model="form.name" :placeholder="t('bot.namePh')" />
             </label>
             <label class="field">
-              <span>模型 <em>留空用 CLI 默认</em></span>
-              <input v-model="form.model" :placeholder="selectedAgent?.models?.[0] || '默认'" list="model-list" />
+              <span>{{ t('bot.model') }} <em>{{ t('bot.modelHint') }}</em></span>
+              <input v-model="form.model" :placeholder="selectedAgent?.models?.[0] || t('common.default')" list="model-list" />
               <datalist id="model-list">
                 <option v-for="m in (selectedAgent?.models||[])" :key="m" :value="m"></option>
               </datalist>
@@ -445,30 +445,30 @@
           </div>
 
           <div class="field">
-            <span>头像</span>
+            <span>{{ t('bot.avatar') }}</span>
             <div class="emoji-row">
               <button v-for="e in emojiList" :key="e" class="emoji" :class="{sel: form.emoji===e}" @click="form.emoji=e">{{e}}</button>
             </div>
           </div>
 
           <label class="field">
-            <span>工作目录 <em>Bot 的所有文件操作都在这里</em></span>
+            <span>{{ t('common.workdir') }} <em>{{ t('bot.cwdHint') }}</em></span>
             <div class="input-row">
-              <input v-model="form.cwd" placeholder="默认：用户主目录" />
-              <button class="ghost-btn" @click="pickDir">选择</button>
+              <input v-model="form.cwd" :placeholder="t('bot.cwdPh')" />
+              <button class="ghost-btn" @click="pickDir">{{ t('common.choose') }}</button>
             </div>
           </label>
 
           <label class="field">
-            <span>权限模式 <em>{{permTip}}</em></span>
+            <span>{{ t('bot.perm') }} <em>{{permTip}}</em></span>
             <div class="seg">
               <button v-for="p in perms" :key="p.v" :class="{on: form.permission===p.v}" @click="form.permission=p.v" :title="p.tip">{{p.label}}</button>
             </div>
           </label>
 
           <label class="field">
-            <span>角色设定 <em>可选，每轮都会带上</em></span>
-            <textarea v-model="form.systemPrompt" rows="2" placeholder="比如：你是我的后端架构师，回答尽量短，先给结论。"></textarea>
+            <span>{{ t('bot.role') }} <em>{{ t('bot.roleHint') }}</em></span>
+            <textarea v-model="form.systemPrompt" rows="2" :placeholder="t('bot.rolePh')"></textarea>
           </label>
 
           <label class="field">
@@ -477,10 +477,10 @@
           </label>
 
           <div class="form-foot">
-            <button v-if="modal==='edit'" class="danger-btn" @click="removeBot">删除 Bot</button>
+            <button v-if="modal==='edit'" class="danger-btn" @click="removeBot">{{ t('bot.delete') }}</button>
             <span class="spacer"></span>
-            <button class="ghost-btn" @click="modal=null">取消</button>
-            <button class="primary" :disabled="!canSave" @click="save">{{modal==='new' ? '创建并开始' : '保存'}}</button>
+            <button class="ghost-btn" @click="modal=null">{{ t('common.cancel') }}</button>
+            <button class="primary" :disabled="!canSave" @click="save">{{modal==='new' ? t('bot.create') : t('common.save')}}</button>
           </div>
         </div>
       </div>
@@ -491,8 +491,8 @@
     <div class="modal">
       <header class="modal-head">
         <div>
-          <h2>设置</h2>
-          <p>网络与运行环境（影响所有 Bot、内嵌终端、一键安装）</p>
+          <h2>{{ t('sidebar.settings') }}</h2>
+          <p>{{ t('settings.sub') }}</p>
         </div>
         <button class="icon-btn" @click="modal=null">✕</button>
       </header>
@@ -513,45 +513,45 @@
           </div>
 
           <div class="field">
-            <span>CLI 网络</span>
+            <span>{{ t('net.title') }}</span>
             <div class="seg">
-              <button :class="{on: netForm.mode==='auto'}" @click="netForm.mode='auto'">智能（推荐）</button>
-              <button :class="{on: netForm.mode==='inherit'}" @click="netForm.mode='inherit'">全部跟随系统</button>
-              <button :class="{on: netForm.mode==='direct'}" @click="netForm.mode='direct'">全部直连</button>
-              <button :class="{on: netForm.mode==='custom'}" @click="netForm.mode='custom'">自定义</button>
+              <button :class="{on: netForm.mode==='auto'}" @click="netForm.mode='auto'">{{ t('net.auto') }}</button>
+              <button :class="{on: netForm.mode==='inherit'}" @click="netForm.mode='inherit'">{{ t('net.inherit') }}</button>
+              <button :class="{on: netForm.mode==='direct'}" @click="netForm.mode='direct'">{{ t('net.direct') }}</button>
+              <button :class="{on: netForm.mode==='custom'}" @click="netForm.mode='custom'">{{ t('net.custom') }}</button>
             </div>
             <em class="hint">{{netHint}}</em>
             <div v-if="netForm.mode==='direct'" class="warn-line">
-              ⚠️ 海外 CLI（Claude / Gemini / Codex）直连会让出口 IP 与地区突变，可能触发风控甚至封号，除非你确定不需要代理。
+              ⚠️ {{ t('net.directWarn') }}
             </div>
             <div v-if="overrideList.length" class="override-line">
-              单个 CLI 覆盖：<span v-for="o in overrideList" :key="o.id" class="ov-chip">{{o.id}} → {{o.mode==='direct'?'直连':'代理'}}<button class="ov-x" @click="clearOverride(o.id)">×</button></span>
+              {{ t('net.override') }}：<span v-for="o in overrideList" :key="o.id" class="ov-chip">{{o.id}} → {{o.mode==='direct' ? t('net.modeDirect') : t('net.modeProxy')}}<button class="ov-x" @click="clearOverride(o.id)">×</button></span>
             </div>
           </div>
 
           <label class="field" v-if="netForm.mode==='custom'">
-            <span>代理地址</span>
+            <span>{{ t('net.proxyUrl') }}</span>
             <input v-model="netForm.url" placeholder="http://127.0.0.1:7897" />
           </label>
 
           <div class="field">
-            <span>连通性诊断 <em>测的是当前选项</em></span>
+            <span>{{ t('net.diag') }} <em>{{ t('net.diagHint') }}</em></span>
             <div class="diag">
               <div v-for="d in diagRows" :key="d.host" class="diag-row">
                 <span class="diag-host">{{d.host}}</span>
                 <span class="diag-tag">{{d.used}}</span>
-                <span class="diag-val" :class="d.ok ? 'ok' : 'bad'">{{d.ok ? '正常 · ' + d.ms + 'ms' : '失败 · ' + d.error}}</span>
+                <span class="diag-val" :class="d.ok ? 'ok' : 'bad'">{{d.ok ? t('net.diagOk', {ms: d.ms}) : t('net.diagFail', {e: d.error})}}</span>
               </div>
-              <div v-if="!diagRows.length" class="diag-idle">{{diagBusy ? '测试中…' : '还没测过，点一下开始'}}</div>
+              <div v-if="!diagRows.length" class="diag-idle">{{diagBusy ? t('net.testing') : t('net.diagIdle')}}</div>
             </div>
             <div class="diag-actions">
-              <button class="ghost-btn" :disabled="diagBusy" @click="runDiagnose">{{diagBusy ? '测试中…' : '开始诊断'}}</button>
-              <span v-if="diag && diag.envProxy" class="diag-env">系统环境代理：{{diag.envProxy}}</span>
+              <button class="ghost-btn" :disabled="diagBusy" @click="runDiagnose">{{diagBusy ? t('net.testing') : t('net.diagStart')}}</button>
+              <span v-if="diag && diag.envProxy" class="diag-env">{{ t('net.envProxy') }}：{{diag.envProxy}}</span>
             </div>
           </div>
 
           <div class="field">
-            <span>关于</span>
+            <span>{{ t('settings.about') }}</span>
             <div class="about">
               <div class="about-row">
                 <span class="about-ver">Baton v{{appInfo.version || '—'}}</span>
@@ -561,13 +561,13 @@
                   v-if="updateState.state === 'ready'"
                   class="primary"
                   @click="installUpdate"
-                >重启并安装</button>
+                >{{ t('update.restart') }}</button>
                 <button
                   v-else
                   class="ghost-btn"
                   :disabled="!canCheckUpdate || updateState.state === 'checking' || updateState.state === 'downloading'"
                   @click="checkUpdate"
-                >{{updateState.state === 'checking' ? '检查中…' : '检查更新'}}</button>
+                >{{updateState.state === 'checking' ? t('update.checking') : t('update.check')}}</button>
               </div>
               <div class="update-bar" v-if="updateState.state === 'downloading'">
                 <i :style="{ width: (updateState.percent || 0) + '%' }"></i>
@@ -578,8 +578,8 @@
 
           <div class="form-foot">
             <span class="spacer"></span>
-            <button class="ghost-btn" @click="modal=null">取消</button>
-            <button class="primary" @click="saveNet">保存</button>
+            <button class="ghost-btn" @click="modal=null">{{ t('common.cancel') }}</button>
+            <button class="primary" @click="saveNet">{{ t('common.save') }}</button>
           </div>
         </div>
       </div>
@@ -591,8 +591,8 @@
     <div class="modal">
       <header class="modal-head">
         <div>
-          <h2>{{groupForm.id ? '群聊设置' : '新建群聊'}}</h2>
-          <p>把几个 Bot 放进一个房间，@ 谁谁回答，回答里 @ 别人就自动交班</p>
+          <h2>{{groupForm.id ? t('group.editTitle') : t('sidebar.newGroup')}}</h2>
+          <p>{{ t('group.sub') }}</p>
         </div>
         <button class="icon-btn" @click="modal=null">✕</button>
       </header>
@@ -600,15 +600,15 @@
       <!-- 从模板一键组建：只在新建时出现 -->
       <div v-if="!groupForm.id && templates.length" class="tpl-bar">
         <div class="tpl-head">
-          <span>从模板一键组建</span>
-          <em>自动按角色创建 Bot，CLI 从本机已装的中挑</em>
+          <span>{{ t('group.fromTpl') }}</span>
+          <em>{{ t('group.fromTplHint') }}</em>
         </div>
         <div class="tpl-list">
           <button v-for="t in templates" :key="t.id" class="tpl-card" :disabled="creatingTpl" @click="useTemplate(t)">
             <span class="tpl-emoji">{{t.emoji}}</span>
             <span class="tpl-main">
-              <b>{{t.name}}</b>
-              <small>{{t.desc}}</small>
+              <b>{{loc(t, 'name')}}</b>
+              <small>{{loc(t, 'desc')}}</small>
             </span>
             <span class="tpl-roles">
               <span v-for="r in t.roles" :key="r.role" :title="r.role">{{r.emoji}}</span>
@@ -616,27 +616,27 @@
           </button>
         </div>
         <div v-if="tplError" class="tpl-err">{{tplError}}</div>
-        <div class="tpl-or">或手动挑成员 ↓</div>
+        <div class="tpl-or">{{ t('group.orManual') }} ↓</div>
       </div>
 
       <div class="modal-body">
         <div class="form-col">
           <div class="field-row">
             <label class="field">
-              <span>群名</span>
-              <input v-model="groupForm.name" placeholder="比如：上线指挥部" />
+              <span>{{ t('group.name') }}</span>
+              <input v-model="groupForm.name" :placeholder="t('group.namePh')" />
             </label>
             <label class="field">
-              <span>工作目录 <em>可选，留空跟随各 Bot</em></span>
+              <span>{{ t('common.workdir') }} <em>{{ t('group.cwdHint') }}</em></span>
               <div class="input-row">
-                <input v-model="groupForm.cwd" placeholder="跟随各 Bot" />
-                <button class="ghost-btn" @click="pickGroupDir">选择</button>
+                <input v-model="groupForm.cwd" :placeholder="t('head.followDir')" />
+                <button class="ghost-btn" @click="pickGroupDir">{{ t('common.choose') }}</button>
               </div>
             </label>
           </div>
 
           <div class="field">
-            <span>成员 <em>至少一个，点选加入</em></span>
+            <span>{{ t('group.members') }} <em>{{ t('group.membersHint') }}</em></span>
             <div class="member-pick">
               <div v-for="b in bots" :key="b.id" class="member-card" :class="{sel: groupForm.memberIds.includes(b.id)}"
                    @click="toggleMember(b.id)">
@@ -645,12 +645,12 @@
                 <span class="mc-cli">{{agentNameOf(b)}}</span>
                 <span class="mc-check">{{groupForm.memberIds.includes(b.id) ? '✓' : ''}}</span>
               </div>
-              <div v-if="!bots.length" class="member-empty">还没有 Bot，先去建几个</div>
+              <div v-if="!bots.length" class="member-empty">{{ t('group.noBots') }}</div>
             </div>
           </div>
 
           <div class="field" v-if="groupForm.memberIds.length">
-            <span>负责人 <em>没人被 @ 时由谁先接</em></span>
+            <span>{{ t('group.leader') }} <em>{{ t('group.leaderHint') }}</em></span>
             <div class="seg">
               <button v-for="b in groupForm.memberIds.map(id => bots.find(x => x.id === id)).filter(Boolean)"
                       :key="b.id" :class="{on: groupForm.leaderId===b.id}" @click="groupForm.leaderId=b.id">
@@ -660,12 +660,12 @@
           </div>
 
           <div class="field">
-            <span>并发执行 <em>默认串行，最稳</em></span>
+            <span>{{ t('group.concurrent') }} <em>{{ t('group.concurrentHint') }}</em></span>
             <label class="sw-row">
               <input type="checkbox" v-model="groupForm.concurrent" />
               <span class="sw-text">
-                允许并行
-                <small>只影响「你一次 @ 好几个 Bot」这一步；交班接力永远串行（后一个要读前一个的结论）。前提是成员不会互相覆盖：要么各自有独立目录，要么共用同一个 git 仓库（见下方 worktree 选项）；都不满足时自动退回串行。</small>
+                {{ t('group.allowParallel') }}
+                <small>{{ t('group.parallelHint') }}</small>
               </span>
             </label>
             <label class="sw-row" v-if="groupForm.concurrent">
@@ -695,17 +695,17 @@
           </div>
 
           <div class="field" v-if="groupForm.id">
-            <span>决策板 <em>定下来的事，后续成员都会读到，不会被反复推翻</em></span>
+            <span>{{ t('group.decisions') }} <em>{{ t('group.decisionsHint') }}</em></span>
             <textarea class="dec-area" v-model="groupForm.decisionsText" rows="5"
-                      placeholder="还没有决策。Bot 在回答里写「【决策】xxx」时会自动记到这里。"></textarea>
-            <div class="dec-hint">一行一条，可以直接改或删。清空后保存即清空整个决策板。</div>
+                      :placeholder="t('group.decisionsPh')"></textarea>
+            <div class="dec-hint">{{ t('group.decisionsTip') }}</div>
           </div>
 
           <div class="form-foot">
-            <button v-if="groupForm.id" class="danger-btn" @click="removeGroup">解散群聊</button>
+            <button v-if="groupForm.id" class="danger-btn" @click="removeGroup">{{ t('group.disband') }}</button>
             <span class="spacer"></span>
-            <button class="ghost-btn" @click="modal=null">取消</button>
-            <button class="primary" :disabled="!canSaveGroup" @click="saveGroup">{{groupForm.id ? '保存' : '创建群聊'}}</button>
+            <button class="ghost-btn" @click="modal=null">{{ t('common.cancel') }}</button>
+            <button class="primary" :disabled="!canSaveGroup" @click="saveGroup">{{groupForm.id ? t('common.save') : t('group.create')}}</button>
           </div>
         </div>
       </div>
@@ -808,7 +808,7 @@
                 <div class="hop-head" @click="toggleHop(tk.id, i)">
                   <span class="hop-n">{{i + 1}}</span>
                   <b class="hop-name">{{h.kind==='verify' ? t('runs.verify') : h.botName}}</b>
-                  <span class="hop-from" v-if="h.kind!=='verify' && h.from">← {{h.from}}</span>
+                  <span class="hop-from" v-if="h.kind!=='verify' && h.from">← {{fromLabel(h.from)}}</span>
                   <span class="hop-tag" v-if="h.worktree">{{ t('runs.worktree') }}</span>
                   <span class="hop-meta">{{fmtDur(h.duration)}}</span>
                   <span class="hop-meta" v-if="h.usage" :title="t('msg.tokensTip', {i: h.usage.input, o: h.usage.output, c: h.usage.cacheRead})">{{fmtTokens(sumTok(h.usage))}} tok</span>

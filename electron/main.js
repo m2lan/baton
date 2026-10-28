@@ -70,6 +70,8 @@ const { getTemplate, buildPlan, listForUI } = require('./templates');
 const { buildMarkdown } = require('./export');
 const runlog = require('./runlog');
 const git = require('./git');
+const lang = require('./lang');
+const { L } = lang;
 
 // 调试用参数。打包后 Chromium 会对未知的 --xxx 直接报 "bad option" 退出，
 // 所以同时支持环境变量（LOCALBOT_SHOT / LOCALBOT_SHOT_JS …），CI 与打包版都能用。
@@ -118,7 +120,7 @@ function setUpdaterState(patch) {
 
 function initUpdater() {
   if (!app.isPackaged) {
-    setUpdaterState({ state: 'disabled', message: '开发模式不检查更新' });
+    setUpdaterState({ state: 'disabled', message: L('开发模式不检查更新', 'Updates are not checked in dev mode') });
     return;
   }
 
@@ -128,7 +130,7 @@ function initUpdater() {
     feed = fs.readFileSync(path.join(process.resourcesPath || '', 'app-update.yml'), 'utf8');
   } catch {}
   if (!feed || /YOUR_GITHUB_USERNAME/.test(feed)) {
-    setUpdaterState({ state: 'disabled', message: '未配置更新源：package.json → build.publish' });
+    setUpdaterState({ state: 'disabled', message: L('未配置更新源：package.json → build.publish', 'No update source configured: package.json → build.publish') });
     return;
   }
 
@@ -136,7 +138,7 @@ function initUpdater() {
   try {
     autoUpdater = require('electron-updater').autoUpdater;
   } catch (e) {
-    setUpdaterState({ state: 'disabled', message: '更新模块未加载' });
+    setUpdaterState({ state: 'disabled', message: L('更新模块未加载', 'Updater module not loaded') });
     return;
   }
 
@@ -163,7 +165,7 @@ function initUpdater() {
 }
 
 async function checkForUpdatesManually() {
-  if (!app.isPackaged) return { ok: false, error: '开发模式不检查更新' };
+  if (!app.isPackaged) return { ok: false, error: L('开发模式不检查更新', 'Updates are not checked in dev mode') };
   try {
     const { autoUpdater } = require('electron-updater');
     await autoUpdater.checkForUpdates();
@@ -190,7 +192,7 @@ function persist() {
 
 function createBot(cfg) {
   const agent = getAgent(cfg.agentId);
-  if (!agent) throw new Error('未知的 CLI');
+  if (!agent) throw new Error(L('未知的 CLI', 'Unknown CLI'));
   const bot = {
     id: `b_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
     name: cfg.name || agent.name,
@@ -226,10 +228,10 @@ const isGroupKey = (key) => String(key || '').startsWith('g_');
 
 function createGroup(cfg) {
   const memberIds = (cfg.memberIds || []).filter((id) => state.bots.some((b) => b.id === id));
-  if (memberIds.length < 1) throw new Error('至少选一个 Bot');
+  if (memberIds.length < 1) throw new Error(L('至少选一个 Bot', 'Pick at least one Bot'));
   const group = {
     id: `g_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
-    name: cfg.name || '新群聊',
+    name: cfg.name || L('新群聊', 'New room'),
     emoji: cfg.emoji || '👥',
     color: cfg.color || '#7c6bff',
     memberIds,
@@ -272,14 +274,14 @@ let installing = null;
 
 function installAgent(agentId) {
   const agent = getAgent(agentId);
-  if (!agent) return { ok: false, error: '未知的 CLI' };
+  if (!agent) return { ok: false, error: L('未知的 CLI', 'Unknown CLI') };
   const inst = agent.install || {};
-  if (inst.kind === 'manual') return { ok: false, error: inst.hint || '需要手动安装' };
-  if (installing) return { ok: false, error: '已有安装任务在进行中' };
+  if (inst.kind === 'manual') return { ok: false, error: inst.hint || L('需要手动安装', 'Needs a manual install') };
+  if (installing) return { ok: false, error: L('已有安装任务在进行中', 'Another install is in progress') };
 
   // 安装命令的差异（npm / PowerShell / sh）统一由 platform 决定
   const cmd = platform.installCommand(inst, resolveBin('npm'));
-  if (!cmd) return { ok: false, error: inst.hint || '这个平台没有可用的自动安装方式' };
+  if (!cmd) return { ok: false, error: inst.hint || L('这个平台没有可用的自动安装方式', 'No automatic install for this platform') };
 
   installing = agentId;
   emit('install:log', {
@@ -298,7 +300,7 @@ function installAgent(agentId) {
   child.stderr.on('data', push);
   child.on('close', async (code) => {
     installing = null;
-    emit('install:log', { agentId, line: code === 0 ? '✓ 安装完成' : `✗ 安装结束（退出码 ${code}）`, done: true, code });
+    emit('install:log', { agentId, line: code === 0 ? L('✓ 安装完成', '✓ Installed') : L(`✗ 安装结束（退出码 ${code}）`, `✗ Install ended (exit code ${code})`), done: true, code });
     getDetector().invalidate(agentId);
     agentCache = await getDetector().full(CATALOG);
     emit('agents:update', agentCache);
@@ -374,6 +376,7 @@ const room = new Room({
 function registerIpc() {
   ipcMain.handle('app:init', () => {
     state = store.loadState();
+    lang.setLang(state.settings.lang);
     // v1 曾经把默认值写成全局直连（会剥掉海外 CLI 的代理），这里一次性迁回「智能」
     const savedProxy = state.settings.proxy;
     if (!savedProxy || savedProxy.v !== 2) {
@@ -454,14 +457,14 @@ function registerIpc() {
 
   ipcMain.handle('templates:create', async (_e, { templateId, cwd }) => {
     const tpl = getTemplate(templateId);
-    if (!tpl) return { ok: false, error: '未知模板' };
+    if (!tpl) return { ok: false, error: L('未知模板', 'Unknown template') };
 
     // agentCache 可能还没检测完，兜底跑一次同步探测
     let pool = agentCache;
     if (!pool.length) pool = getDetector().fast(CATALOG);
     const installed = pool.filter((a) => a.installed);
     const plan = buildPlan(tpl, installed);
-    if (!plan.length) return { ok: false, error: '本机还没有安装任何 AI CLI，先装一个再试' };
+    if (!plan.length) return { ok: false, error: L('本机还没有安装任何 AI CLI，先装一个再试', 'No AI CLI is installed yet — install one first') };
 
     // 每个角色建一个 Bot，systemPrompt 就是角色的职责描述
     const bots = plan.map((p) =>
@@ -508,12 +511,12 @@ function registerIpc() {
   ipcMain.handle('runs:summary', (_e, days) => runlog.summary(Number(days) || 0));
   ipcMain.handle('chat:export', async (_e, key) => {
     const messages = store.getMessages(key) || [];
-    if (!messages.length) return { ok: false, error: '这个会话还没有内容' };
+    if (!messages.length) return { ok: false, error: L('这个会话还没有内容', 'This conversation is empty') };
 
     let payload;
     if (isGroupKey(key)) {
       const g = state.groups.find((x) => x.id === key);
-      if (!g) return { ok: false, error: '群聊不存在' };
+      if (!g) return { ok: false, error: L('群聊不存在', 'Room not found') };
       payload = {
         kind: 'group',
         title: g.name,
@@ -528,7 +531,7 @@ function registerIpc() {
       };
     } else {
       const bot = state.bots.find((b) => b.id === key);
-      if (!bot) return { ok: false, error: 'Bot 不存在' };
+      if (!bot) return { ok: false, error: L('Bot 不存在', 'Bot not found') };
       payload = {
         kind: 'bot',
         title: bot.name,
@@ -540,7 +543,7 @@ function registerIpc() {
 
     const { filename, markdown } = buildMarkdown(payload);
     const r = await dialog.showSaveDialog(win, {
-      title: '导出会话',
+      title: L('导出会话', 'Export conversation'),
       defaultPath: path.join(app.getPath('downloads'), filename),
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     });
@@ -549,7 +552,7 @@ function registerIpc() {
       fs.writeFileSync(r.filePath, markdown, 'utf8');
       return { ok: true, path: r.filePath, dir: path.dirname(r.filePath) };
     } catch (e) {
-      return { ok: false, error: `写入失败：${e.message}` };
+      return { ok: false, error: L(`写入失败：${e.message}`, `Could not write: ${e.message}`) };
     }
   });
 
@@ -579,7 +582,7 @@ function registerIpc() {
 
     if (isGroupKey(key)) {
       const group = state.groups.find((g) => g.id === key);
-      if (!group) return { ok: false, error: '群聊不存在' };
+      if (!group) return { ok: false, error: L('群聊不存在', 'Room not found') };
       const userMsg = {
         id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         role: 'user',
@@ -592,12 +595,12 @@ function registerIpc() {
       group.updatedAt = Date.now();
       group.preview = text.slice(0, 60);
       persist();
-      room.send(group, text, userMsg).catch((e) => room.pushSystem(key, `编排出错：${e.message}`));
+      room.send(group, text, userMsg).catch((e) => room.pushSystem(key, L(`编排出错：${e.message}`, `Orchestration error: ${e.message}`)));
       return { ok: true, userMsg, group: true };
     }
 
     const bot = state.bots.find((b) => b.id === key);
-    if (!bot) return { ok: false, error: 'Bot 不存在' };
+    if (!bot) return { ok: false, error: L('Bot 不存在', 'Bot not found') };
     const agent = getAgent(bot.agentId);
     const userMsg = {
       id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -737,6 +740,7 @@ function registerIpc() {
 
   ipcMain.handle('settings:save', (_e, patch) => {
     state.settings = { ...state.settings, ...patch };
+    if (patch.lang) lang.setLang(patch.lang); // 系统提示、报错跟着界面语言走
     if (patch.theme) nativeTheme.themeSource = patch.theme; // 窗口自身的深浅跟着界面走
     if (state.settings.proxy) {
       state.settings.proxy = { ...state.settings.proxy, v: 2 };
@@ -836,7 +840,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   // 外观设置要在建窗口前生效：窗口底色、标题栏都跟它走（默认跟随系统）
-  nativeTheme.themeSource = (store.loadState().settings || {}).theme || 'system';
+  const bootSettings = store.loadState().settings || {};
+  nativeTheme.themeSource = bootSettings.theme || 'system';
+  lang.setLang(bootSettings.lang); // 更新模块等启动时就会产出提示，语言要先定下来
   if (process.platform === 'win32') app.setAppUserModelId('com.baton.app');
   // 旧版本叫 LocalBot，先迁移数据再让 store 读
   migrateLegacyData();

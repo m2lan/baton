@@ -15,10 +15,14 @@ const TEMPLATES = [
   {
     id: 'writing',
     name: '写作小组',
+    nameEn: 'Writing crew',
     emoji: '✍️',
     desc: '有人写、有人挑错、有人从读者角度把关',
+    descEn: 'One writes, one finds problems, one reads as the audience',
     hint: '文档、说明、对外材料',
+    hintEn: 'Docs, guides, external material',
     flow: '作者写 → 审稿挑问题 → 作者改 → 直到审稿说通过',
+    flowEn: 'Author writes → reviewer flags issues → author revises → until the reviewer approves',
     members: [
       {
         role: '作者',
@@ -59,10 +63,14 @@ const TEMPLATES = [
   {
     id: 'review',
     name: '代码评审',
+    nameEn: 'Code review',
     emoji: '🔧',
     desc: '实现、审查、测试各管一摊',
+    descEn: 'Implementer, reviewer and tester each own a part',
     hint: '改动不大但想要第二双眼睛',
+    hintEn: 'Small changes that want a second pair of eyes',
     flow: '实现写代码 → 审查提意见 → 实现改 → 测试补用例',
+    flowEn: 'Implementer codes → reviewer comments → implementer fixes → tester adds cases',
     members: [
       {
         role: '实现',
@@ -99,10 +107,14 @@ const TEMPLATES = [
   {
     id: 'feature',
     name: '需求到实现',
+    nameEn: 'Idea to ship',
     emoji: '📐',
     desc: '产品拆需求、架构定方案、编码落地',
+    descEn: 'Product scopes it, architect designs it, coder ships it',
     hint: '一个功能从想法到能用',
+    hintEn: 'One feature from idea to working code',
     flow: '产品拆需求 → 架构给方案 → 编码实现 → 回到产品验收',
+    flowEn: 'Product scopes → architect designs → coder builds → product accepts',
     members: [
       {
         role: '产品',
@@ -182,10 +194,14 @@ function listForUI() {
   return TEMPLATES.map((t) => ({
     id: t.id,
     name: t.name,
+    nameEn: t.nameEn || '',
     emoji: t.emoji,
     desc: t.desc,
+    descEn: t.descEn || '',
     hint: t.hint,
+    hintEn: t.hintEn || '',
     flow: t.flow,
+    flowEn: t.flowEn || '',
     roles: t.members.map((m) => ({ role: m.role, emoji: m.emoji, color: m.color })),
   }));
 }

@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { buildEnv, resolveBin } = require('./runner');
+const { L } = require('./lang');
 
 const MAX_BUF = 64 * 1024 * 1024;
 
@@ -108,7 +109,7 @@ async function addWorktree(root, dir, base) {
     fs.mkdirSync(path.dirname(dir), { recursive: true });
   } catch {}
   const head = await git(root, ['rev-parse', '--verify', 'HEAD']);
-  if (!head.ok) return { ok: false, error: '仓库还没有任何提交，无法创建 worktree' };
+  if (!head.ok) return { ok: false, error: L('仓库还没有任何提交，无法创建 worktree', 'The repo has no commits yet, so a worktree cannot be created') };
   const add = await git(root, ['worktree', 'add', '--detach', dir, 'HEAD'], { timeout: 180000 });
   if (!add.ok) return { ok: false, error: add.stderr.trim().slice(-400) };
   const headTree = await git(root, ['rev-parse', 'HEAD^{tree}']);
@@ -117,7 +118,7 @@ async function addWorktree(root, dir, base) {
     const ap = await applyPatch(dir, patch);
     if (!ap.ok) {
       await removeWorktree(root, dir);
-      return { ok: false, error: `同步主目录未提交的改动失败：${ap.error}` };
+      return { ok: false, error: L(`同步主目录未提交的改动失败：${ap.error}`, `Could not copy the main directory's uncommitted changes: ${ap.error}`) };
     }
   }
   return { ok: true, dir };

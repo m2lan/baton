@@ -162,6 +162,10 @@ createApp({
     const langCode = computed(() => window.I18N.resolveLang(langPref.value));
     /** 模板里统一用 t('key')；读 langCode 会自动建立依赖，切语言即重渲染 */
     const t = (key, vars) => window.I18N.t(key, vars, langCode.value);
+    // 主进程送来的数据（CLI 简介、模板名）自带英文字段 xxEn：英文界面用它，缺了就退回中文
+    const loc = (obj, field) => (obj && langCode.value === 'en' && obj[field + 'En']) || (obj && obj[field]) || '';
+    // 运行记录里存的是中文来源标签（旧记录也是），显示时再翻
+    const fromLabel = (f) => (f === '用户' ? t('common.you') : f === '验收' ? t('runs.verify') : f);
     const netForm = reactive({ mode: 'auto', url: '', perAgent: {} });
     const diag = ref(null);
     const diagBusy = ref(false);
@@ -228,11 +232,12 @@ createApp({
     const tplError = ref('');
     const mention = reactive({ open: false, query: '', index: 0, list: [] });
 
-    const perms = [
-      { v: 'auto', label: '自动', tip: 'Bot 自己决定，不再问你 —— 适合明确任务' },
-      { v: 'default', label: '谨慎', tip: '涉及写入/执行时按 CLI 默认策略询问' },
-      { v: 'plan', label: '只读', tip: '只读规划，不改文件不执行命令' },
-    ];
+    // 跟着语言变：做成计算属性，切换语言时重新生成
+    const perms = computed(() => [
+      { v: 'auto', label: t('perm.auto'), tip: t('perm.autoTip') },
+      { v: 'default', label: t('perm.default'), tip: t('perm.defaultTip') },
+      { v: 'plan', label: t('perm.plan'), tip: t('perm.planTip') },
+    ]);
 
     /* -------- 派生 -------- */
     const convos = computed(() => {
@@ -268,11 +273,11 @@ createApp({
     });
     const netHint = computed(() => {
       if (netForm.mode === 'auto') {
-        return '国内 CLI（CodeBuddy / Qwen）走直连——它们的 setProxy 拿到代理变量会崩；海外 CLI（Claude / Gemini / Codex）沿用系统代理，出口 IP 不变，避免风控。';
+        return t('net.autoHint');
       }
-      if (netForm.mode === 'inherit') return '所有 CLI 都沿用启动本应用时环境里的 HTTP(S)_PROXY。';
-      if (netForm.mode === 'direct') return '所有 CLI 都不带代理。只建议在「完全不需要代理」的网络下使用。';
-      return '所有 CLI 与终端都走这个代理。';
+      if (netForm.mode === 'inherit') return t('net.inheritHint');
+      if (netForm.mode === 'direct') return t('net.directHint');
+      return t('net.customHint');
     });
     const overrideList = computed(() =>
       Object.entries(netForm.perAgent || {}).map(([id, mode]) => ({ id, mode }))
@@ -297,14 +302,9 @@ createApp({
       }
       return true;
     });
-    const permTip = computed(() => (perms.find((p) => p.v === form.permission) || perms[0]).tip);
+    const permTip = computed(() => (perms.value.find((p) => p.v === form.permission) || perms.value[0]).tip);
     const emojiList = EMOJIS;
-    const starters = [
-      '先看看这个目录，告诉我它是做什么的',
-      '跑一遍构建，有报错就修掉',
-      '读一下 README，把缺失的部分补全',
-      '列一下当前有哪些没提交的改动',
-    ];
+    const starters = computed(() => [t('starter.1'), t('starter.2'), t('starter.3'), t('starter.4')]);
 
     /* -------- 工具函数 -------- */
     const agentOf = (b) => (b ? agents.value.find((a) => a.id === b.agentId) : null);
@@ -315,25 +315,25 @@ createApp({
     const ago = (ts) => {
       if (!ts) return '';
       const d = Date.now() - ts;
-      if (d < 60e3) return '刚刚';
+      if (d < 60e3) return t('time.justNow');
       if (d < 3600e3) return `${Math.floor(d / 60e3)}m`;
       if (d < 864e5) return `${Math.floor(d / 3600e3)}h`;
       if (d < 7 * 864e5) return `${Math.floor(d / 864e5)}d`;
-      return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+      return new Date(ts).toLocaleDateString(langCode.value === 'zh' ? 'zh-CN' : 'en-US', { month: 'numeric', day: 'numeric' });
     };
     const shortPath = (p) => {
-      if (!p) return '默认目录';
+      if (!p) return t('head.defaultDir');
       const parts = p.replace(/\\/g, '/').split('/').filter(Boolean);
       return parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p;
     };
     const shortModel = (m) => String(m).replace(/^claude-/, '').replace(/-\d{8}$/, '');
     const verLabel = (a) => {
       if (!a) return '';
-      if (!a.installed) return '未安装';
+      if (!a.installed) return t('bot.notInstalled');
       const v = String(a.version || '');
-      return v && v !== 'installed' ? 'v' + v : '已安装';
+      return v && v !== 'installed' ? 'v' + v : t('bot.installed');
     };
-    const permLabel = (p) => (perms.find((x) => x.v === p) || perms[0]).label;
+    const permLabel = (p) => (perms.value.find((x) => x.v === p) || perms.value[0]).label;
     const toolPreview = (p) => {
       if (!p.input) return '';
       let s = String(p.input).replace(/\s+/g, ' ').trim();
@@ -541,16 +541,14 @@ createApp({
         } else if (channel === 'pty:exit') {
           if (payload.id === term.id && xterm) {
             const plain = termOut.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim();
-            xterm.write('\r\n\x1b[38;5;243m[进程已退出，点「重启」可再来一次]\x1b[0m\r\n');
+            xterm.write(`\r\n\x1b[38;5;243m[${t('term.exited')}]\x1b[0m\r\n`);
             if (/EADDRINUSE|address already in use/i.test(plain)) {
               xterm.write(
-                '\x1b[33m提示：本地端口 61172 被别的程序占着（通常是 WorkBuddy / CodeBuddy 桌面版正在后台跑）。\r\n' +
-                '可以关掉那个程序后点「重启」，或者点右上角「系统终端」到外面去登录。\x1b[0m\r\n'
+                `\x1b[33m${t('term.portBusy')}\x1b[0m\r\n`
               );
             } else if (!plain) {
               xterm.write(
-                '\x1b[33m提示：它没输出就退出了，通常是本地守护端口被占用（61172）。\r\n' +
-                '关掉 WorkBuddy / CodeBuddy 桌面版后点「重启」，或改用「系统终端」。\x1b[0m\r\n'
+                `\x1b[33m${t('term.noOutput')}\x1b[0m\r\n`
               );
             }
           }
@@ -723,7 +721,7 @@ createApp({
         if (r.dir) window.lb.openFolder(r.dir);
       } else if (r && !r.canceled) {
         console.warn(r.error);
-        alert(r.error || '导出失败');
+        alert(r.error || t('export.failed'));
       }
     }
 
@@ -888,29 +886,29 @@ createApp({
     const updateLabel = computed(() => {
       switch (updateState.state) {
         case 'checking':
-          return '检查中…';
+          return t('update.checking');
         case 'available':
-          return `发现 v${updateState.version}`;
+          return t('update.found', { v: updateState.version });
         case 'downloading':
-          return `下载中 ${updateState.percent || 0}%`;
+          return t('update.downloading', { p: updateState.percent || 0 });
         case 'ready':
-          return `v${updateState.version} 已就绪`;
+          return t('update.ready', { v: updateState.version });
         case 'latest':
-          return '已是最新';
+          return t('update.latest');
         case 'error':
-          return '检查失败';
+          return t('update.failed');
         case 'disabled':
-          return '开发模式';
+          return t('update.dev');
         default:
           return '';
       }
     });
     const updateHint = computed(() => {
-      if (updateState.state === 'error') return updateState.message || '检查更新失败，稍后再试';
-      if (updateState.state === 'disabled') return updateState.message || '开发模式不检查更新';
-      if (updateState.state === 'ready') return '下载完成，重启后自动安装';
-      if (updateState.state === 'available') return '正在后台下载，完成后会提示重启';
-      if (updateState.state === 'latest') return '当前已是最新版本';
+      if (updateState.state === 'error') return updateState.message || t('update.errorHint');
+      if (updateState.state === 'disabled') return updateState.message || t('update.devHint');
+      if (updateState.state === 'ready') return t('update.readyHint');
+      if (updateState.state === 'available') return t('update.availableHint');
+      if (updateState.state === 'latest') return t('update.latestHint');
       return '';
     });
 
@@ -920,7 +918,7 @@ createApp({
       const r = await window.lb.checkUpdate();
       if (!r || !r.ok) {
         updateState.state = 'error';
-        updateState.message = String((r && r.error) || '检查更新失败').slice(0, 200);
+        updateState.message = String((r && r.error) || t('update.failed')).slice(0, 200);
       }
     }
 
@@ -997,7 +995,7 @@ createApp({
     /* -------- 群聊 -------- */
     function openGroupNew() {
       groupForm.id = '';
-      groupForm.name = '协作小组';
+      groupForm.name = t('group.defaultName');
       groupForm.cwd = '';
       groupForm.memberIds = bots.value.slice(0, 2).map((b) => b.id);
       groupForm.leaderId = groupForm.memberIds[0] || '';
@@ -1045,7 +1043,7 @@ createApp({
       try {
         const r = await window.lb.createFromTemplate({ templateId: t.id, cwd: groupForm.cwd.trim() });
         if (!r || !r.ok) {
-          tplError.value = (r && r.error) || '创建失败';
+          tplError.value = (r && r.error) || t('group.createFailed');
           return;
         }
         await refreshBots();
@@ -1331,7 +1329,7 @@ createApp({
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
-      t, langPref, langCode, langOptions, setLang, themeOptions, themePref, setTheme,
+      t, loc, fromLabel, langPref, langCode, langOptions, setLang, themeOptions, themePref, setTheme,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
       liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub, liveTokens, followTokens,

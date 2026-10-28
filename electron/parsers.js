@@ -4,6 +4,8 @@
  * 统一吐出：text / thinking / toolStart / toolEnd / session / meta / error / done
  */
 
+const { L } = require('./lang');
+
 const ANSI = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-Za-z@]/g;
 
 function stripAnsi(s = '') {
@@ -97,7 +99,7 @@ function claudeParser(sink) {
         model: o.model,
         turns: o.num_turns,
       });
-      if (o.is_error) sink.error(o.result || '执行失败');
+      if (o.is_error) sink.error(o.result || L('执行失败', 'Failed'));
       return;
     }
   };
@@ -127,11 +129,11 @@ function codexParser(sink) {
       return;
     }
     if (o.type === 'error') {
-      sink.error(textOfContent(o.message) || '执行失败');
+      sink.error(textOfContent(o.message) || L('执行失败', 'Failed'));
       return;
     }
     if (o.type === 'turn.failed') {
-      sink.error(textOfContent(o.error && o.error.message) || '执行失败');
+      sink.error(textOfContent(o.error && o.error.message) || L('执行失败', 'Failed'));
       return;
     }
     if (o.type === 'turn.completed') {
@@ -312,7 +314,7 @@ function genericParser(sink) {
         (err && err.message) ||
         (typeof err === 'string' ? err : '') ||
         textOfContent(o.message) ||
-        '执行失败';
+        L('执行失败', 'Failed');
       sink.error(msg);
       return;
     }

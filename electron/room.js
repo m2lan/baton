@@ -17,6 +17,7 @@ const { buildEnv } = require('./runner');
 const { stripAnsi } = require('./parsers');
 const { Task } = require('./runlog');
 const git = require('./git');
+const { L } = require('./lang');
 
 const isWin = process.platform === 'win32';
 
@@ -139,7 +140,7 @@ class Room {
    */
   interject(group, text) {
     const live = this.live.get(group.id);
-    if (!live) return { ok: false, error: '这个群正在跑上一轮' };
+    if (!live) return { ok: false, error: L('这个群正在跑上一轮', 'This room is still running the previous turn') };
     live.notes.push(text);
     if (!live.queue.length) {
       const leader = group.leaderId || (group.memberIds || [])[0];
@@ -370,7 +371,7 @@ class Room {
     if (!bot) return null;
     const agent = getAgent(bot.agentId);
     if (!agent) {
-      this.pushSystem(group.id, `找不到 ${bot.name} 对应的 CLI 配置`);
+      this.pushSystem(group.id, L(`找不到 ${bot.name} 对应的 CLI 配置`, `No CLI config found for ${bot.name}`));
       return null;
     }
     if (!group.memberIds.includes(bot.id)) return null;
@@ -412,7 +413,7 @@ class Room {
     if (!r.ok) {
       live.task.clearRunning(bot.id);
       live.task.emitLive();
-      this.pushSystem(group.id, `${bot.name} 启动失败：${r.error}`);
+      this.pushSystem(group.id, L(`${bot.name} 启动失败：${r.error}`, `${bot.name} failed to start: ${r.error}`));
       return null;
     }
     const msg = await r.done;
@@ -461,7 +462,7 @@ class Room {
       const r = await git.addWorktree(root, dir, base);
       if (!r.ok) {
         for (const p of prepared) await git.removeWorktree(root, p.worktree.dir);
-        this.pushSystem(group.id, `创建 worktree 失败，本轮改为串行：${r.error}`);
+        this.pushSystem(group.id, L(`创建 worktree 失败，本轮改为串行：${r.error}`, `Could not create a worktree, running serially this turn: ${r.error}`));
         return null;
       }
       const cwd = path.join(dir, path.relative(root, plan.dirs[i]));
@@ -490,12 +491,18 @@ class Room {
       await git.removeWorktree(root, wt.dir);
     }
     if (merged.length) {
-      this.pushSystem(group.id, `已把 ${merged.join('、')} 在独立 worktree 里的改动合回主目录（未提交，可以用 git status 查看）。`);
+      this.pushSystem(group.id, L(
+        `已把 ${merged.join('、')} 在独立 worktree 里的改动合回主目录（未提交，可以用 git status 查看）。`,
+        `Applied the worktree changes of ${merged.join(', ')} back to the main directory (uncommitted — see git status).`
+      ));
     }
     for (const f of failed) {
       this.pushSystem(
         group.id,
-        `${f.name} 的改动和前面成员的改动冲突，没有合回主目录。补丁存在：${f.file}\n可以手动 \`git apply --3way\` 处理。`
+        L(
+          `${f.name} 的改动和前面成员的改动冲突，没有合回主目录。补丁存在：${f.file}\n可以手动 \`git apply --3way\` 处理。`,
+          `${f.name}'s changes conflict with an earlier member's and were not applied. Patch saved to: ${f.file}\nApply it by hand with \`git apply --3way\`.`
+        )
           + (f.error ? `\n${f.error}` : '')
       );
     }
@@ -561,7 +568,7 @@ class Room {
     const leader = this.getBot(leaderId);
     const cwd = group.cwd || (leader && leader.cwd) || '';
     if (!cwd || !fs.existsSync(cwd)) {
-      this.pushSystem(group.id, `设置了验收命令，但群和负责人都没有工作目录，跳过验收。`);
+      this.pushSystem(group.id, L('设置了验收命令，但群和负责人都没有工作目录，跳过验收。', 'A verify command is set, but neither the room nor the lead has a working directory — skipping it.'));
       return 'skipped';
     }
     const max = Math.max(1, Number(group.verifyMax) || VERIFY_MAX_DEFAULT);
@@ -587,18 +594,27 @@ class Room {
     });
     const secs = (r.duration / 1000).toFixed(1);
     if (passed) {
-      this.pushSystem(group.id, `✓ 验收通过：\`${cmd}\`（${secs}s）`);
+      this.pushSystem(group.id, L(`✓ 验收通过：\`${cmd}\`（${secs}s）`, `✓ Verify passed: \`${cmd}\` (${secs}s)`));
       return 'passed';
     }
-    const why = r.timedOut ? `超过 ${Math.round(VERIFY_TIMEOUT_MS / 60000)} 分钟没结束` : `退出码 ${r.code}`;
+    const mins = Math.round(VERIFY_TIMEOUT_MS / 60000);
+    // why 也会写进交给模型的修复任务里，那部分保持中文
+    const why = r.timedOut ? `超过 ${mins} 分钟没结束` : `退出码 ${r.code}`;
+    const whyUi = r.timedOut ? L(why, `did not finish within ${mins} min`) : L(why, `exit code ${r.code}`);
     const tail = r.output ? `\n\`\`\`\n${r.output}\n\`\`\`` : '';
     const ownerId = (group.verifyOwner && group.memberIds.includes(group.verifyOwner) && group.verifyOwner) || leaderId;
     const owner = this.getBot(ownerId);
     if (live.verifyAttempts >= max || !owner) {
-      this.pushSystem(group.id, `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${why}，已达重试上限，停下等你处理。${tail}`);
+      this.pushSystem(group.id, L(
+        `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${whyUi}，已达重试上限，停下等你处理。${tail}`,
+        `✗ Verify failed (${live.verifyAttempts}/${max}): \`${cmd}\` ${whyUi}. Retry limit reached — over to you.${tail}`
+      ));
       return 'failed';
     }
-    this.pushSystem(group.id, `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${why}，交回 ${owner.name} 修复。${tail}`);
+    this.pushSystem(group.id, L(
+      `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${whyUi}，交回 ${owner.name} 修复。${tail}`,
+      `✗ Verify failed (${live.verifyAttempts}/${max}): \`${cmd}\` ${whyUi}. Handed back to ${owner.name} to fix.${tail}`
+    ));
     queue.push({
       botId: owner.id,
       from: null,
@@ -613,8 +629,8 @@ class Room {
   async send(group, userText, userMsg) {
     const members = this.members(group);
     if (!members.length) {
-      this.pushSystem(group.id, '这个群还没有成员，先在群设置里加几个 Bot。');
-      return { ok: false, error: '群聊没有成员' };
+      this.pushSystem(group.id, L('这个群还没有成员，先在群设置里加几个 Bot。', 'This room has no members yet — add some Bots in room settings.'));
+      return { ok: false, error: L('群聊没有成员', 'The room has no members') };
     }
     if (this.busy.has(group.id)) return this.interject(group, userText);
 
@@ -685,9 +701,13 @@ class Room {
           this.pushSystem(
             group.id,
             plan.reason === 'noDir'
-              ? '并发已开启，但有成员没设置工作目录，本轮仍按串行执行。'
-              : '并发已开启，但这几个成员共用同一个目录且不是 git 仓库，本轮仍按串行执行 —— 同时改同一目录会互相覆盖。'
-                + '给每个 Bot 设置各自的目录，或把目录初始化成 git 仓库（会自动用 worktree 隔离），就能真正并行。'
+              ? L('并发已开启，但有成员没设置工作目录，本轮仍按串行执行。', 'Parallel runs are on, but a member has no working directory — running serially this turn.')
+              : L(
+                '并发已开启，但这几个成员共用同一个目录且不是 git 仓库，本轮仍按串行执行 —— 同时改同一目录会互相覆盖。'
+                  + '给每个 Bot 设置各自的目录，或把目录初始化成 git 仓库（会自动用 worktree 隔离），就能真正并行。',
+                'Parallel runs are on, but these members share a directory that is not a git repo — running serially, since editing one folder at once would overwrite each other. '
+                  + 'Give each Bot its own directory, or make the folder a git repo (worktrees are used automatically) to really run in parallel.'
+              )
           );
         }
       }
@@ -716,7 +736,10 @@ class Room {
             endReason = 'stall';
             this.pushSystem(
               group.id,
-              `${bot.name} 这轮和上一轮说的几乎一样，判定为原地打转，已停下。换个更具体的要求，或 @ 另一个成员打破僵局。`
+              L(
+                `${bot.name} 这轮和上一轮说的几乎一样，判定为原地打转，已停下。换个更具体的要求，或 @ 另一个成员打破僵局。`,
+                `${bot.name} said almost the same thing as last turn — treated as stalled and stopped. Give a more specific ask, or @ another member to break the loop.`
+              )
             );
             queue.length = 0;
             break;
@@ -740,7 +763,10 @@ class Room {
         if (endReason === 'stall') break;
         if (queue.length) {
           endReason = 'maxTurns';
-          this.pushSystem(group.id, `已经接力了 ${MAX_TURNS} 跳，先停在这里。看一下进展，需要的话再发一句让它们继续。`);
+          this.pushSystem(group.id, L(
+            `已经接力了 ${MAX_TURNS} 跳，先停在这里。看一下进展，需要的话再发一句让它们继续。`,
+            `Reached ${MAX_TURNS} hops — pausing here. Check the progress and send another message to continue.`
+          ));
           break;
         }
         if (!turns) break; // 一个都没跑起来（比如 CLI 启动失败），验收没有意义

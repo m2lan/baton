@@ -9,6 +9,7 @@ const path = require('path');
 const pty = require('@lydell/node-pty');
 const net = require('net');
 const { resolveBin, buildEnv } = require('./runner');
+const { L } = require('./lang');
 
 const isWin = process.platform === 'win32';
 const sessions = new Map(); // id -> { term, botId }
@@ -50,7 +51,7 @@ function resolveTarget(bot, agent, mode) {
   }
 
   const bin = agent && resolveBin(agent.bin);
-  if (!bin) throw new Error(`找不到 ${agent ? agent.name : 'CLI'}，请先安装`);
+  if (!bin) throw new Error(L(`找不到 ${agent ? agent.name : 'CLI'}，请先安装`, `${agent ? agent.name : 'CLI'} not found — install it first`));
 
   const loginCmd = (agent.login || '').trim();
   const parts = loginCmd.split(/\s+/).filter(Boolean);
@@ -99,7 +100,7 @@ async function open({ botId, bot, agent, mode, cols, rows }) {
   return {
     id,
     cwd: target.cwd,
-    title: mode === 'login' ? (agent ? agent.name : 'CLI') : '终端',
+    title: mode === 'login' ? (agent ? agent.name : 'CLI') : L('终端', 'Terminal'),
     slashLogin: !!target.slashLogin,
   };
 }

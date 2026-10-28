@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const store = require('./store');
+const { L } = require('./lang');
 
 const MAX_TASKS = 60;
 // 正在跑的任务：开始就登记，界面实时画接力图；结束才落盘
@@ -126,7 +127,7 @@ class Task {
   /** 记一跳。prompt 太长就截断，其余字段原样 */
   hop(h) {
     const rec = { kind: 'bot', ...h };
-    if (rec.prompt && rec.prompt.length > MAX_PROMPT) rec.prompt = rec.prompt.slice(0, MAX_PROMPT) + '\n…（已截断）';
+    if (rec.prompt && rec.prompt.length > MAX_PROMPT) rec.prompt = rec.prompt.slice(0, MAX_PROMPT) + L('\n…（已截断）', '\n…(truncated)');
     if (rec.changes && rec.changes.length > 80) rec.changes = rec.changes.slice(0, 80);
     this.data.hops.push(rec);
     this.emitLive();

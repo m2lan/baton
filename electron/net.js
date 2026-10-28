@@ -10,6 +10,7 @@
  */
 const net = require('net');
 const tls = require('tls');
+const { L } = require('./lang');
 
 const PROXY_KEYS = ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'];
 // WorkBuddy/CodeBuddy 宿主注入的内部变量，别让被拉起的 CLI 继承
@@ -173,7 +174,7 @@ async function diagnose() {
       if (mode === 'custom' && cfg.url) r = await probeViaProxy(h.host, cfg.url);
       else if (mode === 'inherit' && envProxy) r = await probeViaProxy(h.host, envProxy);
       else r = await probeDirect(h.host);
-      const used = mode === 'custom' && cfg.url ? '自定义代理' : mode === 'inherit' && envProxy ? '代理' : '直连';
+      const used = mode === 'custom' && cfg.url ? L('自定义代理', 'custom proxy') : mode === 'inherit' && envProxy ? L('代理', 'proxy') : L('直连', 'direct');
       return { ...h, mode, used, ...r };
     })
   );
