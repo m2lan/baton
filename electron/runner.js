@@ -238,7 +238,7 @@ class Runner {
 
     const msg = newMessage();
     if (opts.sender) msg.sender = opts.sender;
-    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false, key, ephemeral: !!opts.ephemeral };
+    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false, key, ephemeral: !!opts.ephemeral, calls: new Map() };
     let doneResolve;
     ctx.done = new Promise((r) => (doneResolve = r));
     ctx.resolveDone = () => doneResolve(msg);
@@ -400,14 +400,42 @@ class Runner {
         msg.sessionId = sid;
         if (!ctx.ephemeral) this.onSession(key, sid);
       },
+      /**
+       * 运行中的用量：CLI 每次模型调用报一次（可能重复报、可能报累计值）。
+       * 按调用 id 合并、每个字段取最大值，再把各次调用加总 —— 重复上报不会多算。
+       */
+      usage: (raw, id) => {
+        if (!raw || typeof raw !== 'object') return;
+        const key = id || `call${ctx.calls.size}`;
+        const prev = ctx.calls.get(key) || {};
+        const merged = { ...prev };
+        for (const [k, v] of Object.entries(raw)) {
+          if (typeof v === 'number') merged[k] = Math.max(prev[k] || 0, v);
+          else if (v && typeof v === 'object') merged[k] = v;
+        }
+        ctx.calls.set(key, merged);
+        const sum = { input: 0, output: 0, cacheRead: 0 };
+        for (const c of ctx.calls.values()) {
+          const n = normUsage(c);
+          if (!n) continue;
+          sum.input += n.input;
+          sum.output += n.output;
+          sum.cacheRead += n.cacheRead;
+        }
+        if (!sum.input && !sum.output && !sum.cacheRead) return;
+        msg.meta = { ...(msg.meta || {}), tokens: sum, tokensLive: true };
+        emitMsg();
+      },
       meta: (obj) => {
         msg.meta = msg.meta || {};
         for (const [k, v] of Object.entries(obj || {})) {
           if (v !== undefined && v !== null && v !== '') msg.meta[k] = v;
         }
         if (obj && obj.usage) {
+          // 结束时的汇总以它为准；但有的 CLI 汇总只含最后一次调用，比实时累加还小，那就保留累加值
           const tokens = normUsage(obj.usage);
-          if (tokens) msg.meta.tokens = tokens;
+          const tot = (u) => (u ? u.input + u.output + u.cacheRead : 0);
+          if (tokens && tot(tokens) >= tot(msg.meta.tokens)) msg.meta.tokens = tokens;
         }
         emitMsg();
       },

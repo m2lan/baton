@@ -36,6 +36,7 @@ function textOfContent(content) {
 /* ---------------- Claude Code / CodeBuddy ---------------- */
 function claudeParser(sink) {
   let gotTextDelta = false;
+  let callId = ''; // 当前这次模型调用的 id：message_delta 里没有 id，要靠 message_start 记下来
   return (line) => {
     const o = tryJson(line);
     if (!o) {
@@ -52,6 +53,16 @@ function claudeParser(sink) {
     if (o.type === 'stream_event') {
       const e = o.event || {};
       const d = e.delta || {};
+      // 每次模型调用：开始时报输入，过程中 message_delta 报累计输出 —— 实时用量就从这里来
+      if (e.type === 'message_start' && e.message) {
+        callId = e.message.id || callId;
+        sink.usage(e.message.usage, callId);
+        return;
+      }
+      if (e.type === 'message_delta' && e.usage) {
+        sink.usage(e.usage, callId);
+        return;
+      }
       if (e.type === 'content_block_delta' && d.type === 'text_delta' && d.text) {
         gotTextDelta = true;
         sink.text(d.text);
@@ -61,6 +72,7 @@ function claudeParser(sink) {
       return;
     }
     if (o.type === 'assistant') {
+      if (o.message && o.message.usage) sink.usage(o.message.usage, o.message.id || callId);
       for (const b of (o.message && o.message.content) || []) {
         if (b.type === 'tool_use') sink.toolStart({ id: b.id, name: b.name, input: b.input });
         else if (b.type === 'text' && b.text && !gotTextDelta) sink.text(b.text);
@@ -290,6 +302,9 @@ function genericParser(sink) {
     }
     const sid = o.session_id || o.sessionId || o.sessionID || (o.thread_id ? o.thread_id : null);
     if (sid) sink.session(sid);
+    // 未知 CLI 只要在输出里带了 usage，就当作实时用量收下（同一 id 的重复上报会被合并）
+    const u = o.usage || (o.message && o.message.usage) || (o.data && o.data.usage);
+    if (u && typeof u === 'object') sink.usage(u, o.id || (o.message && o.message.id) || 'turn');
     if (o.type === 'error' || o.error) {
       const err = o.error;
       const msg =

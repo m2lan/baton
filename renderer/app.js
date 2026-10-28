@@ -195,18 +195,19 @@ createApp({
     setInterval(() => {
       if (Object.keys(liveTasks).length) now.value = Date.now();
     }, 250);
-    // 数字滚动：token 跳变时从旧值缓动到新值
-    const tw = reactive({});
-    function tweenTo(id, target) {
-      const from = tw[id] || 0;
-      if (from === target) return;
-      const t0 = performance.now();
-      const step = (ts) => {
-        const k = Math.min(1, (ts - t0) / 700);
-        tw[id] = Math.round(from + (target - from) * (1 - Math.pow(1 - k, 3)));
-        if (k < 1) requestAnimationFrame(step);
+    // 数字滚动：Token 一直在涨，每帧追近目标值，而不是一下跳过去
+    const tw = reactive({ liveTok: 0 });
+    let twLoop = 0;
+    function followTokens() {
+      if (twLoop) return;
+      const step = () => {
+        const target = liveTokens(runsView.live).value;
+        const cur = tw.liveTok || 0;
+        const diff = target - cur;
+        tw.liveTok = Math.abs(diff) < 1 ? target : cur + diff * 0.18;
+        twLoop = runsView.live && modal.value === 'runs' ? requestAnimationFrame(step) : 0;
       };
-      requestAnimationFrame(step);
+      twLoop = requestAnimationFrame(step);
     }
     const openHop = reactive({});
     const openChanges = reactive({});
@@ -378,15 +379,42 @@ createApp({
     const chatKeyOf = (key) => String(key || '').split(':')[0];
     // 流式进度按「会话:Bot」记：单聊的 run key 就是 botId，补成 botId:botId
     const streamKeyOf = (key) => (String(key).includes(':') ? String(key) : `${key}:${key}`);
+    /**
+     * 当前这一跳的流式进度。
+     * tokens：CLI 在运行中报的真实用量（有就用它）；
+     * est：CLI 中途不报时，按输出文字粗估（中日韩字约 1 字 1 token，其余约 4 字符 1 token），只含输出。
+     */
     function streamStats(msg) {
       let chars = 0;
+      let cjk = 0;
       let tools = 0;
       for (const p of (msg && msg.parts) || []) {
         // 思考过程也算输出：长任务里大部分时间都在思考，只数正文会显得几乎没动
-        if (p.type === 'text' || p.type === 'thinking') chars += (p.text || '').length;
-        else if (p.type === 'tool') tools++;
+        if (p.type === 'text' || p.type === 'thinking') {
+          const s = p.text || '';
+          chars += s.length;
+          cjk += (s.match(/[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/g) || []).length;
+        } else if (p.type === 'tool') tools++;
       }
-      return { chars, tools };
+      const real = msg && msg.meta && msg.meta.tokens;
+      return { chars, tools, tokens: real ? sumTok(real) : 0, est: Math.round(cjk + (chars - cjk) / 4) };
+    }
+
+    /** 实时 Token：已完成的跳 + 正在跑的跳（真实值优先，没有就用估算并标记） */
+    function liveTokens(task) {
+      if (!task) return { value: 0, approx: false };
+      let value = sumTok(task.totals.usage);
+      let approx = false;
+      for (const r of task.running || []) {
+        const st = r.kind === 'bot' && liveStream[`${task.key}:${r.botId}`];
+        if (!st) continue;
+        if (st.tokens) value += st.tokens;
+        else if (st.est) {
+          value += st.est;
+          approx = true;
+        }
+      }
+      return { value, approx };
     }
 
     /* -------- 消息/滚动 -------- */
@@ -440,6 +468,7 @@ createApp({
         } else if (channel === 'run:msg') {
           running[chatKeyOf(payload.key)] = true;
           liveStream[streamKeyOf(payload.key)] = streamStats(payload.msg);
+          if (runsView.live && runsView.key === chatKeyOf(payload.key)) followTokens();
           upsert(chatKeyOf(payload.key), payload.msg);
         } else if (channel === 'run:done') {
           const ck = chatKeyOf(payload.key);
@@ -455,7 +484,7 @@ createApp({
           if (runsView.key === payload.key) {
             runsView.live = payload.live;
             if (payload.live) {
-              tweenTo('liveTok', sumTok(payload.live.totals.usage));
+              followTokens();
               followRelay();
             } else runsView.openTask = ''; // 刚跑完：列表刷新后自动展开这一条
           }
@@ -701,7 +730,7 @@ createApp({
         runsView.live = r.live || null;
         if (runsView.live) {
           tw.liveTok = 0;
-          tweenTo('liveTok', sumTok(runsView.live.totals.usage));
+          followTokens();
           followRelay();
         }
         if (!runsView.openTask && runsView.tasks[0]) runsView.openTask = runsView.tasks[0].id;
@@ -811,8 +840,9 @@ createApp({
       if (n.status === 'queued') return t('runs.nodeQueued');
       if (n.status === 'running') {
         if (n.kind === 'verify') return t('runs.nodeVerifying', { t: fmtClock(now.value - n.run.startedAt) });
-        const st = liveStream[`${task.key}:${n.run.botId}`] || { chars: 0, tools: 0 };
-        return t('runs.nodeRunning', { t: fmtClock(now.value - n.run.startedAt), c: fmtTokens(st.chars), n: st.tools });
+        const st = liveStream[`${task.key}:${n.run.botId}`] || { tools: 0 };
+        const k = st.tokens ? `${fmtTokens(st.tokens)} tok` : `≈${fmtTokens(st.est || 0)} tok`;
+        return t('runs.nodeRunning', { t: fmtClock(now.value - n.run.startedAt), k, n: st.tools });
       }
       const h = n.hop;
       if (n.kind === 'verify') return `${endLabel(h.endReason, h)} · ${fmtDur(h.duration)}`;
@@ -1283,7 +1313,7 @@ createApp({
       t, langPref, langCode, langOptions, setLang,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
-      liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub,
+      liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub, liveTokens, followTokens,
     };
   },
 }).mount('#app');
