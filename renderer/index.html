@@ -745,7 +745,9 @@
               </div>
             <div class="live-stats">
               <div><b>{{runsView.live.totals.hops}}</b><span>{{ t('runs.statHops') }}</span></div>
-              <div><b>{{fmtTokens(tw.liveTok || 0)}}</b><span>{{ t('runs.statTokens') }}</span></div>
+              <!-- 多数 CLI 一轮结束才报 token：还没有数时显示「—」，别让人以为统计坏了 -->
+              <div v-if="sumTok(runsView.live.totals.usage)"><b>{{fmtTokens(tw.liveTok || 0)}}</b><span>{{ t('runs.statTokens') }}</span></div>
+              <div v-else><b>—</b><span>{{ t('runs.statTokensPending') }}</span></div>
               <div><b>{{fmtCost(runsView.live.totals.cost)}}</b><span>{{ t('usage.cost') }}</span></div>
               <div><b>{{fmtClock(now - runsView.live.startedAt)}}</b><span>{{ t('runs.statElapsed') }}</span></div>
             </div>

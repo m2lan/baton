@@ -653,7 +653,7 @@ function registerIpc() {
             cwd: bot.cwd,
             changes,
           });
-          task.finish(meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done');
+          task.finish(meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done');
         })
         .catch((e) => logFatal('runlog', e));
     }

@@ -382,7 +382,8 @@ createApp({
       let chars = 0;
       let tools = 0;
       for (const p of (msg && msg.parts) || []) {
-        if (p.type === 'text') chars += (p.text || '').length;
+        // 思考过程也算输出：长任务里大部分时间都在思考，只数正文会显得几乎没动
+        if (p.type === 'text' || p.type === 'thinking') chars += (p.text || '').length;
         else if (p.type === 'tool') tools++;
       }
       return { chars, tools };
