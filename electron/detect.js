@@ -136,7 +136,8 @@ class Detector {
         const version = await this.probe(item.path);
         if (version) {
           item.version = version;
-          cache[item.id] = { path: item.path, mtime: item._mtime, version, ts: Date.now() };
+          // 没拿到真实版本号（超时 / 跑不起来）不进缓存，下次还要重探
+          if (version !== 'installed') cache[item.id] = { path: item.path, mtime: item._mtime, version, ts: Date.now() };
           emitPartial();
         }
       }
@@ -177,12 +178,19 @@ class Detector {
       child.stdout.on('data', (d) => (out += d));
       child.stderr.on('data', (d) => (out += d));
       child.on('error', () => done('installed'));
-      child.on('close', () => done(parseVersion(out)));
+      // 退出码非 0 说明跑不起来（比如 node 版本太低），输出里的数字是报错里的，不是版本号
+      child.on('close', (code) => done(code === 0 ? parseVersion(out) : ''));
     });
   }
 
   publicList(list) {
     return list.map(({ _bin, _mtime, ...rest }) => rest);
+  }
+
+  /** PATH 变了（比如读到了登录 shell 的 PATH）：同一路径的 CLI 可能换了 node，版本全部重探 */
+  invalidateAll() {
+    this.cache = {};
+    this.writeCache();
   }
 
   /** 装完新 CLI 后强制重探某一个 */

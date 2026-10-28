@@ -80,6 +80,17 @@ function parseEnv(text) {
   return out;
 }
 
+/**
+ * 把登录 shell 的 PATH 并进来（排在前面：那是用户真正在终端里用的顺序），
+ * 并作废目录缓存，之后找 bin、拉起 CLI 都按新的 PATH 走。
+ */
+function mergePath(extra) {
+  const sep = isWin ? ';' : ':';
+  const merged = [...String(extra || '').split(sep), ...(process.env.PATH || '').split(sep)].filter(Boolean);
+  process.env.PATH = [...new Set(merged)].join(sep);
+  dirsCache = { at: 0, list: [] };
+}
+
 function resolveBin(bin) {
   if (!bin) return null;
   if (path.isAbsolute(bin) && fs.existsSync(bin)) return bin;
@@ -439,4 +450,4 @@ class Runner {
   }
 }
 
-module.exports = { Runner, resolveBin, spawnCli, buildEnv, parseEnv, killTree, toCommandLine };
+module.exports = { Runner, resolveBin, spawnCli, buildEnv, parseEnv, mergePath, killTree, toCommandLine };

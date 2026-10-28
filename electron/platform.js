@@ -23,6 +23,84 @@ const BIN_EXTS = isWin ? ['.cmd', '.exe', '.bat', ''] : [''];
  * mac 上 npm 全局默认在 /opt/homebrew/bin（Apple Silicon）或 /usr/local/bin（Intel），
  * linux 上常见 ~/.npm-global/bin 与 ~/.local/bin。
  */
+/**
+ * 版本管理器（nvm / fnm / asdf / mise）装的 Node 全局命令。
+ * 它们的目录只在 shell 初始化脚本里加进 PATH，从 Finder / Dock 启动的应用拿不到。
+ * nvm 有多个版本时新的在前：CLI 的 #!/usr/bin/env node 会用到排在最前面的 node。
+ */
+function versionManagerDirs(home) {
+  const dirs = [];
+  const nvmDir = process.env.NVM_DIR || path.join(home, '.nvm');
+  const nvmRoot = path.join(nvmDir, 'versions', 'node');
+  try {
+    const vers = fs.readdirSync(nvmRoot).filter((v) => /^v\d/.test(v));
+    const num = (v) => v.slice(1).split('.').map(Number);
+    vers.sort((a, b) => {
+      const x = num(a);
+      const y = num(b);
+      for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return (y[i] || 0) - (x[i] || 0);
+      return 0;
+    });
+    // nvm alias default 指定的版本排最前（终端里默认用的就是它），比如「20」或「v20.19.4」
+    let alias = '';
+    try {
+      alias = fs.readFileSync(path.join(nvmDir, 'alias', 'default'), 'utf8').trim().replace(/^v/, '');
+    } catch {}
+    const preferred = /^\d/.test(alias) ? vers.find((v) => v === `v${alias}` || v.startsWith(`v${alias}.`)) : '';
+    if (preferred) vers.splice(vers.indexOf(preferred), 1), vers.unshift(preferred);
+    for (const v of vers) dirs.push(path.join(nvmRoot, v, 'bin'));
+  } catch {}
+  dirs.push(
+    path.join(home, '.fnm', 'aliases', 'default', 'bin'),
+    path.join(home, 'Library', 'Application Support', 'fnm', 'aliases', 'default', 'bin'),
+    path.join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin'),
+    path.join(home, '.asdf', 'shims'),
+    path.join(home, '.local', 'share', 'mise', 'shims')
+  );
+  return dirs;
+}
+
+/**
+ * 从登录 shell 读出用户真正的 PATH。
+ * macOS 上从 Finder / Dock 启动的应用只有 /usr/bin:/bin:/usr/sbin:/sbin，
+ * 用户在 .zshrc 里加的目录全都看不到。目录猜不全，最可靠的是直接问 shell。
+ * 交互式 shell 可能卡在插件的更新提示上，所以加超时；拿不到就返回 null，靠 extraBinDirs 兜底。
+ */
+function loginShellPath(timeout = 6000) {
+  if (isWin) return Promise.resolve(null);
+  const shell = process.env.SHELL || (isMac ? '/bin/zsh' : '/bin/bash');
+  const mark = '__BATON_PATH__';
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try {
+      child = spawn(shell, ['-ilc', `printf '${mark}%s${mark}' "$PATH"`], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' }, // oh-my-zsh 启动时别问要不要更新
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+      resolve(null);
+    }, timeout);
+    child.stdout.on('data', (c) => (out += c.toString('utf8')));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const m = out.match(new RegExp(`${mark}(.*?)${mark}`, 's'));
+      resolve(m && m[1].trim() ? m[1].trim() : null);
+    });
+  });
+}
+
 function extraBinDirs() {
   const home = os.homedir();
   if (isWin) {
@@ -33,8 +111,11 @@ function extraBinDirs() {
       path.join(home, 'AppData', 'Local', 'Programs', 'nodejs'),
     ];
   }
+  // 版本管理器的目录排最前：/usr/local/bin 里常有一个旧的系统 node，
+  // 排在前面会让 CLI 的 #!/usr/bin/env node 用上它（实测 v18.16 跑不起 CodeBuddy）
   if (isMac) {
     return [
+      ...versionManagerDirs(home),
       '/opt/homebrew/bin',
       '/usr/local/bin',
       path.join(home, '.npm-global', 'bin'),
@@ -47,6 +128,7 @@ function extraBinDirs() {
     ];
   }
   return [
+    ...versionManagerDirs(home),
     path.join(home, '.local', 'bin'),
     path.join(home, '.npm-global', 'bin'),
     path.join(home, '.bun', 'bin'),
@@ -161,6 +243,7 @@ module.exports = {
   isLinux,
   BIN_EXTS,
   extraBinDirs,
+  loginShellPath,
   installCommand,
   installScriptOf,
   openSystemTerminal,

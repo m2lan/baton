@@ -60,7 +60,7 @@ process.on('unhandledRejection', (e) => {
 
 const { CATALOG, getAgent } = require('./agents');
 const store = require('./store');
-const { Runner, spawnCli, resolveBin, killTree } = require('./runner');
+const { Runner, spawnCli, resolveBin, killTree, mergePath } = require('./runner');
 const { Detector } = require('./detect');
 const terminal = require('./pty');
 const netCfg = require('./net');
@@ -838,6 +838,18 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   initUpdater();
+  // 从 Finder / Dock 启动时 PATH 只有系统目录，nvm 等装的 CLI 全找不到。
+  // 后台读登录 shell 的 PATH，读到后重新探测一遍（不阻塞启动，界面先用快速结果）
+  platform
+    .loginShellPath()
+    .then(async (p) => {
+      if (!p) return;
+      mergePath(p);
+      getDetector().invalidateAll();
+      agentCache = await getDetector().full(CATALOG);
+      emit('agents:update', agentCache);
+    })
+    .catch(() => {});
   // 上次群聊并发跑到一半被关掉，会留下临时 worktree，后台收拾掉
   git.cleanupStale(path.join(store.root(), 'worktrees')).catch(() => {});
   app.on('activate', () => {
