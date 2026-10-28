@@ -401,12 +401,17 @@ class Room {
     const before = wt ? wt.base : await git.snapshot(root);
 
     const startedAt = Date.now();
+    const from = job.from ? (this.getBot(job.from) || {}).name || '' : job.verify ? '验收' : '用户';
+    const who = { botId: bot.id, botName: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId };
+    live.task.setRunning(bot.id, { kind: 'bot', ...who, from, startedAt, worktree: !!wt, batch: job.batch || 0, prompt });
     const r = await this.runner.run(target, agent, prompt, {
       key: `${group.id}:${bot.id}`,
       sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
       ephemeral: !!wt,
     });
     if (!r.ok) {
+      live.task.clearRunning(bot.id);
+      live.task.emitLive();
       this.pushSystem(group.id, `${bot.name} 启动失败：${r.error}`);
       return null;
     }
@@ -417,11 +422,11 @@ class Room {
     if (changes.length) this.patchMessageMeta(group.id, msg, { changes: changes.slice(0, 80) });
 
     const meta = msg.meta || {};
+    live.task.clearRunning(bot.id);
     const hop = live.task.hop({
-      botId: bot.id,
-      botName: bot.name,
-      agentId: bot.agentId,
-      from: job.from ? (this.getBot(job.from) || {}).name || '' : job.verify ? '验收' : '用户',
+      ...who,
+      from,
+      batch: job.batch || 0,
       startedAt,
       duration: msg.duration || Date.now() - startedAt,
       status: msg.status,
@@ -563,7 +568,9 @@ class Room {
     live.verifyAttempts = (live.verifyAttempts || 0) + 1;
     this.emitState(group, { active: true, verifying: true, queue: [], turn: live.turn });
 
+    live.task.setRunning('verify', { kind: 'verify', botName: '验收', cmd, attempt: live.verifyAttempts });
     const r = await this.runVerify(cmd, cwd, live);
+    live.task.clearRunning('verify');
     if (this.aborted.has(group.id)) return 'failed';
     const passed = r.code === 0;
     live.task.hop({
@@ -643,6 +650,7 @@ class Room {
         const plan = await this.planConcurrent(group, queue);
         if (plan.mode) {
           const batch = queue.splice(0, queue.length);
+          for (const j of batch) j.batch = 1; // 同一批并行的成员，接力图里画在同一列
           const bots = batch.map((j) => this.getBot(j.botId)).filter(Boolean);
           live.currentList = bots;
           live.turn = 1;
@@ -751,7 +759,6 @@ class Room {
       this.live.delete(group.id);
       this.emitState(group, { active: false });
       this.onChange(group.id);
-      this.emit('runs:update', { key: group.id });
     }
 
     return { ok: true };
@@ -771,6 +778,7 @@ class Room {
     const queued = (p.queue || [])
       .map((j) => brief(this.getBot(j.botId)))
       .filter(Boolean);
+    if (live && live.task && p.active !== false) live.task.setQueue(queued);
     this.emit('room:state', {
       key: group.id,
       active: p.active !== undefined ? !!p.active : list.length > 0,

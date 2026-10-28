@@ -307,6 +307,8 @@ function installAgent(agentId) {
 }
 
 /* ---------------- Runner ---------------- */
+runlog.setEmitter(emit); // 运行日志的实时快照直接推给界面
+
 const runner = new Runner({
   emit,
   onSession: (key, sid) => {
@@ -502,7 +504,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('chat:get', (_e, botId) => store.getMessages(botId));
-  ipcMain.handle('runs:list', (_e, key) => runlog.list(key));
+  ipcMain.handle('runs:list', (_e, key) => ({ live: runlog.liveOf(key), tasks: runlog.list(key) }));
   ipcMain.handle('runs:summary', (_e, days) => runlog.summary(Number(days) || 0));
   ipcMain.handle('chat:export', async (_e, key) => {
     const messages = store.getMessages(key) || [];
@@ -613,8 +615,13 @@ function registerIpc() {
     const repo = await git.repoRoot(bot.cwd);
     const before = await git.snapshot(repo);
     const startedAt = Date.now();
+    const who = { botId: bot.id, botName: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId };
+    // 上一轮还没跑完时 runner 会拒绝，这时别登记新任务，免得顶掉正在跑的那条实时记录
+    const task = runner.isRunning(key) ? null : new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
+    if (task) task.setRunning(bot.id, { kind: 'bot', ...who, from: '用户', startedAt, prompt: text });
     const r = await runner.run(bot, agent, text, { key });
-    if (r.ok) {
+    if (!r.ok && task) task.finish('error');
+    if (r.ok && task) {
       r.done
         .then(async (msg) => {
           const after = before ? await git.snapshot(repo) : null;
@@ -630,11 +637,9 @@ function registerIpc() {
             emit('msg:update', { key, msg });
           }
           const meta = msg.meta || {};
-          const task = new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
+          task.clearRunning(bot.id);
           task.hop({
-            botId: bot.id,
-            botName: bot.name,
-            agentId: bot.agentId,
+            ...who,
             from: '用户',
             startedAt,
             duration: msg.duration || Date.now() - startedAt,
@@ -649,7 +654,6 @@ function registerIpc() {
             changes,
           });
           task.finish(meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done');
-          emit('runs:update', { key });
         })
         .catch((e) => logFatal('runlog', e));
     }

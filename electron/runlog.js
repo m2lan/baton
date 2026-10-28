@@ -15,6 +15,12 @@ const path = require('path');
 const store = require('./store');
 
 const MAX_TASKS = 60;
+// 正在跑的任务：开始就登记，界面实时画接力图；结束才落盘
+const liveTasks = new Map(); // key -> Task
+let emitter = () => {};
+function setEmitter(fn) {
+  emitter = fn || (() => {});
+}
 const MAX_PROMPT = 20000; // prompt 原文上限：够看清三层上下文，又不至于把日志撑爆
 
 const dir = () => path.join(store.root(), 'runs');
@@ -80,6 +86,41 @@ class Task {
       endReason: '',
       hops: [],
     };
+    this.running = new Map(); // id -> 正在跑的这一跳（Bot 或验收）
+    this.queue = []; // 排队等着接手的成员
+    liveTasks.set(key, this);
+    this.emitLive();
+  }
+
+  /** 推给界面的快照。已完成的跳不带 prompt（太大，结束后在列表里看）；正在跑的带上 */
+  snapshot() {
+    return {
+      ...this.data,
+      hops: this.data.hops.map(({ prompt, ...h }) => h),
+      running: [...this.running.values()],
+      queue: this.queue,
+      totals: this.totals(),
+    };
+  }
+
+  emitLive() {
+    emitter('runs:live', { key: this.data.key, live: this.snapshot() });
+  }
+
+  setRunning(id, info) {
+    this.running.set(id, { ...info, startedAt: info.startedAt || Date.now() });
+    this.emitLive();
+  }
+
+  clearRunning(id) {
+    this.running.delete(id);
+  }
+
+  setQueue(list) {
+    const next = list || [];
+    if (JSON.stringify(next) === JSON.stringify(this.queue)) return;
+    this.queue = next;
+    this.emitLive();
   }
 
   /** 记一跳。prompt 太长就截断，其余字段原样 */
@@ -88,6 +129,7 @@ class Task {
     if (rec.prompt && rec.prompt.length > MAX_PROMPT) rec.prompt = rec.prompt.slice(0, MAX_PROMPT) + '\n…（已截断）';
     if (rec.changes && rec.changes.length > 80) rec.changes = rec.changes.slice(0, 80);
     this.data.hops.push(rec);
+    this.emitLive();
     return rec;
   }
 
@@ -99,10 +141,14 @@ class Task {
   finish(endReason) {
     this.data.finishedAt = Date.now();
     this.data.endReason = endReason || this.data.endReason || 'done';
+    this.running.clear();
+    if (liveTasks.get(this.data.key) === this) liveTasks.delete(this.data.key);
+    emitter('runs:live', { key: this.data.key, live: null });
     if (!this.data.hops.length) return this.data; // 一跳都没跑成（比如启动失败）就不记
     const list = read(this.data.key);
     list.push(this.data);
     write(this.data.key, list);
+    emitter('runs:update', { key: this.data.key });
     return this.data;
   }
 }
@@ -163,10 +209,15 @@ function summary(days) {
   };
 }
 
+function liveOf(key) {
+  const t = liveTasks.get(key);
+  return t ? t.snapshot() : null;
+}
+
 function remove(key) {
   try {
     fs.unlinkSync(file(key));
   } catch {}
 }
 
-module.exports = { Task, list, summary, remove, totalsOf };
+module.exports = { Task, list, summary, remove, totalsOf, liveOf, setEmitter };

@@ -187,7 +187,27 @@ createApp({
       worktree: true, verifyCmd: '', verifyMax: 3, verifyOwner: '',
     });
     // 运行记录弹窗：任务列表 / 用量汇总
-    const runsView = reactive({ tab: 'task', key: '', tasks: [], openTask: '', days: 7, summary: null });
+    const runsView = reactive({ tab: 'task', key: '', tasks: [], live: null, openTask: '', days: 7, summary: null });
+    // 实时：每个会话正在跑的任务快照、每个 Bot 当前这一跳的流式进度、走动的时钟
+    const liveTasks = reactive({}); // key -> 快照
+    const liveStream = reactive({}); // 'chatKey:botId' -> {chars, tools}
+    const now = ref(Date.now());
+    setInterval(() => {
+      if (Object.keys(liveTasks).length) now.value = Date.now();
+    }, 250);
+    // 数字滚动：token 跳变时从旧值缓动到新值
+    const tw = reactive({});
+    function tweenTo(id, target) {
+      const from = tw[id] || 0;
+      if (from === target) return;
+      const t0 = performance.now();
+      const step = (ts) => {
+        const k = Math.min(1, (ts - t0) / 700);
+        tw[id] = Math.round(from + (target - from) * (1 - Math.pow(1 - k, 3)));
+        if (k < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
     const openHop = reactive({});
     const openChanges = reactive({});
     const templates = ref([]);
@@ -356,6 +376,17 @@ createApp({
 
     // 群聊的 run key 是 gid:botId，消息归属还是 gid
     const chatKeyOf = (key) => String(key || '').split(':')[0];
+    // 流式进度按「会话:Bot」记：单聊的 run key 就是 botId，补成 botId:botId
+    const streamKeyOf = (key) => (String(key).includes(':') ? String(key) : `${key}:${key}`);
+    function streamStats(msg) {
+      let chars = 0;
+      let tools = 0;
+      for (const p of (msg && msg.parts) || []) {
+        if (p.type === 'text') chars += (p.text || '').length;
+        else if (p.type === 'tool') tools++;
+      }
+      return { chars, tools };
+    }
 
     /* -------- 消息/滚动 -------- */
     function upsert(botId, msg) {
@@ -403,9 +434,11 @@ createApp({
       window.lb.onEvent(async (channel, payload) => {
         if (channel === 'run:start') {
           running[chatKeyOf(payload.key)] = true;
+          liveStream[streamKeyOf(payload.key)] = { chars: 0, tools: 0 };
           scrollBottom();
         } else if (channel === 'run:msg') {
           running[chatKeyOf(payload.key)] = true;
+          liveStream[streamKeyOf(payload.key)] = streamStats(payload.msg);
           upsert(chatKeyOf(payload.key), payload.msg);
         } else if (channel === 'run:done') {
           const ck = chatKeyOf(payload.key);
@@ -415,6 +448,16 @@ createApp({
         } else if (channel === 'msg:update') {
           // 改动清单是 CLI 退出后才算出来的，补到已显示的消息上
           upsert(chatKeyOf(payload.key), payload.msg);
+        } else if (channel === 'runs:live') {
+          if (payload.live) liveTasks[payload.key] = payload.live;
+          else delete liveTasks[payload.key];
+          if (runsView.key === payload.key) {
+            runsView.live = payload.live;
+            if (payload.live) {
+              tweenTo('liveTok', sumTok(payload.live.totals.usage));
+              followRelay();
+            } else runsView.openTask = ''; // 刚跑完：列表刷新后自动展开这一条
+          }
         } else if (channel === 'runs:update') {
           if (modal.value === 'runs' && runsView.key === payload.key) loadRuns();
         } else if (channel === 'room:state') {
@@ -652,7 +695,14 @@ createApp({
 
     async function loadRuns() {
       if (runsView.tab === 'task') {
-        runsView.tasks = (await window.lb.listRuns(runsView.key)) || [];
+        const r = (await window.lb.listRuns(runsView.key)) || {};
+        runsView.tasks = r.tasks || [];
+        runsView.live = r.live || null;
+        if (runsView.live) {
+          tw.liveTok = 0;
+          tweenTo('liveTok', sumTok(runsView.live.totals.usage));
+          followRelay();
+        }
         if (!runsView.openTask && runsView.tasks[0]) runsView.openTask = runsView.tasks[0].id;
       } else {
         runsView.summary = await window.lb.usageSummary(runsView.days);
@@ -705,6 +755,72 @@ createApp({
       const max = Math.max(1, ...out.map((x) => x.tokens));
       return out.map((x) => ({ ...x, pct: (x.tokens / max) * 100 }));
     });
+
+    /** 接力链比弹窗宽时，始终把视野停在最右边（正在跑的那一棒） */
+    function followRelay() {
+      nextTick(() => {
+        const el = document.querySelector('.live-card .relay');
+        if (el) el.scrollTo({ left: el.scrollWidth, behavior: 'smooth' });
+      });
+    }
+
+    const fmtClock = (ms) => {
+      const s = Math.max(0, Math.floor((ms || 0) / 1000));
+      return s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    };
+
+    /**
+     * 接力图的列：你 → 每一跳 → 正在跑的 → 排队的。
+     * 同一批并行的成员（batch 相同）画在同一列里上下叠放。
+     */
+    function relayCols(task) {
+      if (!task) return [];
+      const bad = ['error', 'failed', 'timeout', 'stall'];
+      const cols = [{ batch: 0, nodes: [{ kind: 'user', name: t('common.you'), status: 'done' }] }];
+      const place = (node, batch) => {
+        const last = cols[cols.length - 1];
+        if (batch && last.batch === batch) last.nodes.push(node);
+        else cols.push({ batch, nodes: [node] });
+      };
+      for (const h of task.hops || []) {
+        place({
+          kind: h.kind,
+          name: h.kind === 'verify' ? t('runs.verify') : h.botName,
+          emoji: h.emoji,
+          color: h.color,
+          status: h.status === 'error' || bad.includes(h.endReason) ? 'error' : 'done',
+          hop: h,
+        }, h.batch || 0);
+      }
+      for (const r of task.running || []) {
+        place({ kind: r.kind, name: r.kind === 'verify' ? t('runs.verify') : r.botName, emoji: r.emoji, color: r.color, status: 'running', run: r }, r.batch || 0);
+      }
+      for (const q of task.queue || []) cols.push({ batch: 0, nodes: [{ kind: 'bot', name: q.name, emoji: q.emoji, color: q.color, status: 'queued' }] });
+      return cols.map((c) => ({ ...c, running: c.nodes.some((n) => n.status === 'running'), queued: c.nodes.every((n) => n.status === 'queued') }));
+    }
+
+    function nodeIcon(n) {
+      if (n.kind === 'user') return '🙂';
+      if (n.kind === 'verify') return '🧪';
+      return n.emoji || '🤖';
+    }
+
+    function nodeSub(n, task) {
+      if (n.kind === 'user') return t('runs.nodeUser');
+      if (n.status === 'queued') return t('runs.nodeQueued');
+      if (n.status === 'running') {
+        if (n.kind === 'verify') return t('runs.nodeVerifying', { t: fmtClock(now.value - n.run.startedAt) });
+        const st = liveStream[`${task.key}:${n.run.botId}`] || { chars: 0, tools: 0 };
+        return t('runs.nodeRunning', { t: fmtClock(now.value - n.run.startedAt), c: fmtTokens(st.chars), n: st.tools });
+      }
+      const h = n.hop;
+      if (n.kind === 'verify') return `${endLabel(h.endReason, h)} · ${fmtDur(h.duration)}`;
+      const parts = [];
+      if (h.usage) parts.push(`${fmtTokens(sumTok(h.usage))} tok`);
+      parts.push(fmtDur(h.duration));
+      if (h.changes && h.changes.length) parts.push(t('runs.nodeFiles', { n: h.changes.length }));
+      return parts.join(' · ');
+    }
 
     /** 某个任务里各 Bot 的 token 占比 */
     function botShares(task) {
@@ -1166,6 +1282,7 @@ createApp({
       t, langPref, langCode, langOptions, setLang,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
+      liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub,
     };
   },
 }).mount('#app');

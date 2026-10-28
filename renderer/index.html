@@ -112,7 +112,10 @@
           </button>
           <button class="ghost-btn" @click="openEdit(active)">{{ t('sidebar.settings') }}</button>
         </template>
-        <button class="ghost-btn" @click="openRuns" :title="t('head.runsTip')">{{ t('head.runs') }}</button>
+        <button class="ghost-btn runs-btn" :class="{live: liveTasks[active.id]}" @click="openRuns"
+                :title="liveTasks[active.id] ? t('runs.liveTip') : t('head.runsTip')">
+          <i v-if="liveTasks[active.id]" class="live-dot"></i>{{ t('head.runs') }}
+        </button>
         <button class="ghost-btn" @click="exportChat" :title="t('head.exportTip')">{{ t('head.export') }}</button>
         <button class="ghost-btn" @click="clearChat">{{ t('head.clear') }}</button>
       </div>
@@ -306,7 +309,7 @@
     <!-- 输入框 -->
     <footer v-if="active" class="composer">
       <!-- 群聊进度：谁在跑、后面还排着谁 -->
-      <div v-if="active.kind==='group' && roomProgress[active.id]" class="queue-bar">
+      <div v-if="active.kind==='group' && roomProgress[active.id]" class="queue-bar clickable" @click="openRuns" :title="t('runs.liveTip')">
         <span class="qb-current" v-if="roomProgress[active.id].currentList.length">
           <span class="qb-dot" :style="{background: roomProgress[active.id].currentList[0].color}"></span>
           <b v-if="roomProgress[active.id].currentList.length===1">{{roomProgress[active.id].currentList[0].name}}</b>
@@ -719,7 +722,35 @@
       <div class="modal-body">
         <!-- 本会话的任务 -->
         <template v-if="runsView.tab==='task'">
-          <div v-if="!runsView.tasks.length" class="runs-empty">{{ t('runs.empty') }}</div>
+          <!-- 正在跑的任务：实时接力图 -->
+          <div v-if="runsView.live" class="live-card">
+            <div class="live-head">
+              <i class="live-dot"></i><b>{{ t('runs.live') }}</b>
+              <span class="live-text">{{runsView.live.userText}}</span>
+            </div>
+            <div class="relay">
+                <template v-for="(col, ci) in relayCols(runsView.live)" :key="ci">
+                  <div v-if="ci" class="rl-link" :class="{active: col.running, queued: col.queued}"><i></i></div>
+                  <div class="rl-col">
+                    <div v-for="(n, ni) in col.nodes" :key="ni" class="rl-node" :class="'st-' + n.status">
+                      <span class="rl-av" :style="n.color ? {borderColor: n.color} : {}">{{ nodeIcon(n) }}</span>
+                      <span class="rl-main">
+                        <b>{{n.name}}</b>
+                        <small>{{ nodeSub(n, runsView.live) }}</small>
+                      </span>
+                      <span class="rl-badge"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            <div class="live-stats">
+              <div><b>{{runsView.live.totals.hops}}</b><span>{{ t('runs.statHops') }}</span></div>
+              <div><b>{{fmtTokens(tw.liveTok || 0)}}</b><span>{{ t('runs.statTokens') }}</span></div>
+              <div><b>{{fmtCost(runsView.live.totals.cost)}}</b><span>{{ t('usage.cost') }}</span></div>
+              <div><b>{{fmtClock(now - runsView.live.startedAt)}}</b><span>{{ t('runs.statElapsed') }}</span></div>
+            </div>
+          </div>
+          <div v-if="!runsView.tasks.length && !runsView.live" class="runs-empty">{{ t('runs.empty') }}</div>
           <div v-for="tk in runsView.tasks" :key="tk.id" class="run-task" :class="{open: runsView.openTask===tk.id}">
             <div class="rt-head" @click="runsView.openTask = runsView.openTask===tk.id ? '' : tk.id">
               <span class="rt-time">{{fmtTime(tk.startedAt)}}</span>
@@ -730,6 +761,21 @@
               <span class="rt-end" :class="'end-'+tk.endReason">{{endLabel(tk.endReason)}}</span>
             </div>
             <div v-if="runsView.openTask===tk.id" class="rt-body">
+              <div class="relay">
+                <template v-for="(col, ci) in relayCols(tk)" :key="ci">
+                  <div v-if="ci" class="rl-link" :class="{active: col.running, queued: col.queued}"><i></i></div>
+                  <div class="rl-col">
+                    <div v-for="(n, ni) in col.nodes" :key="ni" class="rl-node" :class="'st-' + n.status">
+                      <span class="rl-av" :style="n.color ? {borderColor: n.color} : {}">{{ nodeIcon(n) }}</span>
+                      <span class="rl-main">
+                        <b>{{n.name}}</b>
+                        <small>{{ nodeSub(n, tk) }}</small>
+                      </span>
+                      <span class="rl-badge"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
               <div v-if="tk.totals.byBot.length > 1" class="rt-bots">
                 <span class="rt-bots-label">{{ t('runs.byBot') }}</span>
                 <div v-for="b in botShares(tk)" :key="b.botId" class="share-row">
