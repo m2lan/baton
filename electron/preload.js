@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('lb', {
   stop: (botId) => invoke('chat:stop', botId),
   clear: (botId) => invoke('chat:clear', botId),
   exportChat: (key) => invoke('chat:export', key),
+  listRuns: (key) => invoke('runs:list', key),
+  usageSummary: (days) => invoke('runs:summary', days),
   pickDir: () => invoke('dialog:pickDir'),
   openExternal: (url) => invoke('shell:open', url),
   openFolder: (dir) => invoke('shell:openFolder', dir),

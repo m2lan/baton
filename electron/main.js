@@ -68,6 +68,8 @@ const platform = require('./platform');
 const { Room, findMentions } = require('./room');
 const { getTemplate, buildPlan, listForUI } = require('./templates');
 const { buildMarkdown } = require('./export');
+const runlog = require('./runlog');
+const git = require('./git');
 
 // 调试用参数。打包后 Chromium 会对未知的 --xxx 直接报 "bad option" 退出，
 // 所以同时支持环境变量（LOCALBOT_SHOT / LOCALBOT_SHOT_JS …），CI 与打包版都能用。
@@ -199,6 +201,7 @@ function createBot(cfg) {
     model: cfg.model || '',
     permission: cfg.permission || 'auto',
     systemPrompt: cfg.systemPrompt || '',
+    env: cfg.env || '', // 一行一个 KEY=VALUE，启动 CLI 时注入
     sessionId: '',
     authed: null, // null=未知, true=已登录, false=需要登录
     createdAt: Date.now(),
@@ -233,6 +236,10 @@ function createGroup(cfg) {
     leaderId: cfg.leaderId || memberIds[0],
     cwd: cfg.cwd || '',
     concurrent: !!cfg.concurrent,
+    worktree: cfg.worktree !== false, // 并发且共用 git 仓库时，用 worktree 隔离
+    verifyCmd: cfg.verifyCmd || '', // 交班链结束后的验收命令，如 npm test
+    verifyMax: Number(cfg.verifyMax) || 3,
+    verifyOwner: cfg.verifyOwner || '', // 验收失败交给谁，空 = 负责人
     decisions: [], // 决策板：Bot 在回答里写【决策】xxx 自动并进来
     sessions: {},
     createdAt: Date.now(),
@@ -424,6 +431,7 @@ function registerIpc() {
     runner.stop(id);
     state.bots = state.bots.filter((b) => b.id !== id);
     store.deleteChat(id);
+    runlog.remove(id);
     for (const g of state.groups) {
       if ((g.memberIds || []).includes(id)) {
         g.memberIds = g.memberIds.filter((x) => x !== id);
@@ -488,11 +496,14 @@ function registerIpc() {
     room.stop(id);
     state.groups = state.groups.filter((g) => g.id !== id);
     store.deleteChat(id);
+    runlog.remove(id);
     persist();
     return true;
   });
 
   ipcMain.handle('chat:get', (_e, botId) => store.getMessages(botId));
+  ipcMain.handle('runs:list', (_e, key) => runlog.list(key));
+  ipcMain.handle('runs:summary', (_e, days) => runlog.summary(Number(days) || 0));
   ipcMain.handle('chat:export', async (_e, key) => {
     const messages = store.getMessages(key) || [];
     if (!messages.length) return { ok: false, error: '这个会话还没有内容' };
@@ -598,7 +609,50 @@ function registerIpc() {
     bot.preview = text.slice(0, 60);
     persist();
 
+    // 单 Bot 也记运行日志：一问一答就是一次任务，顺带记下这一轮改了哪些文件
+    const repo = await git.repoRoot(bot.cwd);
+    const before = await git.snapshot(repo);
+    const startedAt = Date.now();
     const r = await runner.run(bot, agent, text, { key });
+    if (r.ok) {
+      r.done
+        .then(async (msg) => {
+          const after = before ? await git.snapshot(repo) : null;
+          const changes = after ? await git.changedFiles(repo, before, after) : [];
+          if (changes.length) {
+            msg.meta = { ...(msg.meta || {}), changes: changes.slice(0, 80) };
+            const list = store.getMessages(key);
+            const i = list.findIndex((m) => m.id === msg.id);
+            if (i >= 0) {
+              list[i] = msg;
+              store.saveMessages(key, list);
+            }
+            emit('msg:update', { key, msg });
+          }
+          const meta = msg.meta || {};
+          const task = new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
+          task.hop({
+            botId: bot.id,
+            botName: bot.name,
+            agentId: bot.agentId,
+            from: '用户',
+            startedAt,
+            duration: msg.duration || Date.now() - startedAt,
+            status: msg.status,
+            endReason: meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done',
+            usage: meta.tokens || null,
+            cost: typeof meta.cost === 'number' ? meta.cost : null,
+            model: meta.model || bot.model || '',
+            prompt: text,
+            msgId: msg.id,
+            cwd: bot.cwd,
+            changes,
+          });
+          task.finish(meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done');
+          emit('runs:update', { key });
+        })
+        .catch((e) => logFatal('runlog', e));
+    }
     if (!r.ok) {
       const errMsg = {
         id: `m_${Date.now().toString(36)}err`,
@@ -784,6 +838,8 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   initUpdater();
+  // 上次群聊并发跑到一半被关掉，会留下临时 worktree，后台收拾掉
+  git.cleanupStale(path.join(store.root(), 'worktrees')).catch(() => {});
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

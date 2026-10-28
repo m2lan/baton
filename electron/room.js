@@ -8,7 +8,17 @@
  *    不限制单个 Bot 出现的次数（允许「出方案→评审→回改→再审」来回多次），
  *    只用 MAX_TURNS 兜底，防止极端情况下无限空转。
  */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
 const { getAgent } = require('./agents');
+const { buildEnv } = require('./runner');
+const { stripAnsi } = require('./parsers');
+const { Task } = require('./runlog');
+const git = require('./git');
+
+const isWin = process.platform === 'win32';
 
 const MAX_TURNS = 60;
 // 同一个 Bot 连续两次说出几乎一样的话，判定为原地打转。
@@ -24,6 +34,18 @@ const CTX_BUDGET_DECISION = 1600; // ② 其他 Bot 的结论
 const CTX_BUDGET_RECENT = 3000; // ③ 近期完整对话
 const CTX_MSG_CHARS = 600; // 单条消息最多保留多少字
 const CTX_RECENT_MSGS = 10; // ③ 最多取最近几条
+// 验收命令：交班链自然结束后跑一次，不过就交回去修
+const VERIFY_TIMEOUT_MS = Math.max(30 * 1000, Number(process.env.BATON_VERIFY_TIMEOUT_MS) || 5 * 60 * 1000);
+const VERIFY_MAX_DEFAULT = 3;
+const VERIFY_OUTPUT_CHARS = 3000;
+const HANDOFF_FILES = 15; // 交班时最多列出几个上一棒改过的文件
+
+/** 「M src/a.js」这种一行一个的改动清单 */
+function formatChanges(changes, max) {
+  const list = (changes || []).slice(0, max || changes.length).map((c) => `${c.status} ${c.path}`);
+  if (changes && max && changes.length > max) list.push(`…还有 ${changes.length - max} 个`);
+  return list.join('\n');
+}
 
 function textOf(msg) {
   if (!msg || !msg.parts) return '';
@@ -129,6 +151,8 @@ class Room {
 
   stop(gid) {
     this.aborted.add(gid);
+    const live = this.live.get(gid);
+    if (live && live.killVerify) live.killVerify();
     for (const key of this.runner.running.keys()) {
       if (key.startsWith(`${gid}:`)) this.runner.stop(key);
     }
@@ -151,9 +175,10 @@ class Room {
    * 自己说过的话不用带：每个 Bot 有自己的 session，--resume 时它自己记得。
    * @returns {{asks: string[], decisions: string[], recent: string[]}}
    */
-  contextFor(group, bot) {
+  contextFor(group, bot, opts = {}) {
     const all = this.store.getMessages(group.id) || [];
-    const isMine = (m) => m.role === 'assistant' && m.sender && m.sender.id === bot.id;
+    // fresh：这次是全新会话（比如在 worktree 里跑），它不记得自己说过什么，自己的话也得带上
+    const isMine = (m) => !opts.fresh && m.role === 'assistant' && m.sender && m.sender.id === bot.id;
     const who = (m) => (m.role === 'user' ? '用户' : (m.sender && m.sender.name) || '成员');
     const clip = (s) => (s.length > CTX_MSG_CHARS ? s.slice(0, CTX_MSG_CHARS) + '…' : s);
 
@@ -234,7 +259,7 @@ class Room {
       isLeader ? '你是本房间的负责人，用户没点名时由你主答。' : '',
     ];
 
-    const ctx = this.contextFor(group, bot);
+    const ctx = this.contextFor(group, bot, { fresh: !!job.worktree });
     if (ctx.asks.length) chunks.push(`【用户的需求】\n${ctx.asks.join('\n')}`);
 
     // 决策板优先级高于零散结论：已经定下来的事不该被后来的成员推翻
@@ -252,6 +277,12 @@ class Room {
     if (job.from) {
       const fromBot = this.getBot(job.from);
       chunks.push(`【交班】「${fromBot ? fromBot.name : '成员'}」把这件事交给了你，请接着往下做，不要重复它已经完成的步骤。`);
+      if (job.fromChanges && job.fromChanges.length) {
+        chunks.push(`【上一棒改动的文件】\n${formatChanges(job.fromChanges, HANDOFF_FILES)}\n需要核对时直接看这些文件，不要只凭它的描述。`);
+      }
+    }
+    if (job.worktree) {
+      chunks.push('【隔离目录】你这次在一个独立的 git worktree 里工作，和其他成员并行。只改和你任务相关的文件；跑完后改动会自动合回主目录。');
     }
 
     chunks.push(`【本轮任务】\n${job.text}`);
@@ -301,18 +332,39 @@ class Room {
   }
 
   /**
-   * 并发的前提：这几个人各自有独立工作目录。
-   * 共用目录时同时跑会互相覆盖文件，这种「快了但结果不可信」的加速没有意义。
+   * 决定这一批能不能并发、怎么并发：
+   *   - 'dirs'：各成员本来就有独立目录，直接并行
+   *   - 'worktree'：大家共用同一个 git 仓库 → 每人一个临时 worktree，跑完把改动合回来
+   *   - null：不能并发（没设目录会落到 home；共用目录又不是 git 仓库，同时改会互相覆盖）
    */
-  canConcurrent(group, jobs) {
+  async planConcurrent(group, jobs) {
     const bots = (jobs || []).map((j) => this.getBot(j.botId)).filter(Boolean);
-    if (bots.length < 2) return false;
+    if (bots.length < 2) return { mode: null };
     const dirs = bots.map((b) => group.cwd || b.cwd || '');
-    if (dirs.some((d) => !d)) return false; // 没设目录会落到 home，同样会互相干扰
-    return new Set(dirs).size === dirs.length;
+    if (dirs.some((d) => !d)) return { mode: null, reason: 'noDir' };
+    if (new Set(dirs).size === dirs.length) return { mode: 'dirs' };
+    if (group.worktree === false) return { mode: null, reason: 'shared' };
+    const roots = await Promise.all(dirs.map((d) => git.repoRoot(d)));
+    if (roots.some((r) => !r) || new Set(roots).size !== 1) return { mode: null, reason: 'shared' };
+    return { mode: 'worktree', root: roots[0], dirs };
   }
 
-  /** 跑一个 job，返回 {bot, msg}；失败返回 null（错误已经推进会话里了） */
+  /** 改动清单补进已经落盘的消息里（快照要等 CLI 退出后才算得出来） */
+  patchMessageMeta(gid, msg, meta) {
+    msg.meta = { ...(msg.meta || {}), ...meta };
+    const list = this.store.getMessages(gid) || [];
+    const i = list.findIndex((m) => m.id === msg.id);
+    if (i >= 0) {
+      list[i] = msg;
+      this.store.saveMessages(gid, list);
+    }
+    this.emit('msg:update', { key: gid, msg });
+  }
+
+  /**
+   * 跑一个 job，返回 {bot, msg, hop, after}；失败返回 null（错误已经推进会话里了）
+   * job: {botId, text, from, fromChanges?, worktree?: {root, dir, cwd, base}}
+   */
   async runJob(group, job, members, live) {
     const bot = this.getBot(job.botId);
     if (!bot) return null;
@@ -330,26 +382,225 @@ class Room {
       live.notes = [];
     }
 
+    const wt = job.worktree;
+    const cwd = wt ? wt.cwd : group.cwd || bot.cwd;
     const target = {
       id: bot.id,
-      cwd: group.cwd || bot.cwd,
+      cwd,
       model: bot.model,
       permission: bot.permission,
       systemPrompt: bot.systemPrompt,
-      sessionId: (group.sessions && group.sessions[bot.id]) || '',
+      env: bot.env,
+      // worktree 换了目录，原来的 session 在这里 resume 不了，开新会话
+      sessionId: wt ? '' : (group.sessions && group.sessions[bot.id]) || '',
     };
     const prompt = this.buildPrompt(group, bot, { ...job, text: jobText }, members);
 
+    // 跑之前给工作区拍个快照，跑完再拍一次，就知道这一棒改了什么
+    const root = wt ? wt.dir : await git.repoRoot(cwd);
+    const before = wt ? wt.base : await git.snapshot(root);
+
+    const startedAt = Date.now();
     const r = await this.runner.run(target, agent, prompt, {
       key: `${group.id}:${bot.id}`,
       sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
+      ephemeral: !!wt,
     });
     if (!r.ok) {
       this.pushSystem(group.id, `${bot.name} 启动失败：${r.error}`);
       return null;
     }
     const msg = await r.done;
-    return { bot, msg };
+
+    const after = before ? await git.snapshot(root) : null;
+    const changes = after ? await git.changedFiles(root, before, after) : [];
+    if (changes.length) this.patchMessageMeta(group.id, msg, { changes: changes.slice(0, 80) });
+
+    const meta = msg.meta || {};
+    const hop = live.task.hop({
+      botId: bot.id,
+      botName: bot.name,
+      agentId: bot.agentId,
+      from: job.from ? (this.getBot(job.from) || {}).name || '' : job.verify ? '验收' : '用户',
+      startedAt,
+      duration: msg.duration || Date.now() - startedAt,
+      status: msg.status,
+      endReason: meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : '',
+      usage: meta.tokens || null,
+      cost: typeof meta.cost === 'number' ? meta.cost : null,
+      model: meta.model || bot.model || '',
+      prompt,
+      msgId: msg.id,
+      cwd,
+      worktree: !!wt,
+      changes,
+    });
+    this.emitState(group, live.lastState || {});
+    return { bot, msg, hop, after, changes };
+  }
+
+  /**
+   * 共用仓库的并发：每人一个 detached worktree，各跑各的，跑完按顺序把改动应用回主目录。
+   * 合不回去的（和前面的人改了同一处）存成 .patch 文件，告诉用户在哪，不硬合。
+   */
+  async runWorktreeBatch(group, batch, members, live, plan) {
+    const root = plan.root;
+    const base = await git.snapshot(root);
+    if (!base) return null;
+    const stamp = Date.now().toString(36);
+    const wtRoot = path.join(this.store.root(), 'worktrees');
+    const prepared = [];
+    for (let i = 0; i < batch.length; i++) {
+      const job = batch[i];
+      const dir = path.join(wtRoot, `${group.id}-${job.botId}-${stamp}`);
+      const r = await git.addWorktree(root, dir, base);
+      if (!r.ok) {
+        for (const p of prepared) await git.removeWorktree(root, p.worktree.dir);
+        this.pushSystem(group.id, `创建 worktree 失败，本轮改为串行：${r.error}`);
+        return null;
+      }
+      const cwd = path.join(dir, path.relative(root, plan.dirs[i]));
+      prepared.push({ ...job, worktree: { root, dir, cwd, base } });
+    }
+
+    const results = await Promise.all(prepared.map((job) => this.runJob(group, job, members, live)));
+
+    const merged = [];
+    const failed = [];
+    for (let i = 0; i < prepared.length; i++) {
+      const res = results[i];
+      const wt = prepared[i].worktree;
+      if (res && res.after && res.after !== base && !this.aborted.has(group.id)) {
+        const patch = await git.diffPatch(root, base, res.after);
+        const ap = await git.applyPatch(root, patch);
+        if (ap.ok) merged.push(res.bot.name);
+        else {
+          const dir = path.join(this.store.root(), 'patches');
+          fs.mkdirSync(dir, { recursive: true });
+          const file = path.join(dir, `${group.id}-${res.bot.name.replace(/[\\/:*?"<>|\s]/g, '_')}-${stamp}.patch`);
+          fs.writeFileSync(file, patch || '', 'utf8');
+          failed.push({ name: res.bot.name, file, error: ap.error });
+        }
+      }
+      await git.removeWorktree(root, wt.dir);
+    }
+    if (merged.length) {
+      this.pushSystem(group.id, `已把 ${merged.join('、')} 在独立 worktree 里的改动合回主目录（未提交，可以用 git status 查看）。`);
+    }
+    for (const f of failed) {
+      this.pushSystem(
+        group.id,
+        `${f.name} 的改动和前面成员的改动冲突，没有合回主目录。补丁存在：${f.file}\n可以手动 \`git apply --3way\` 处理。`
+          + (f.error ? `\n${f.error}` : '')
+      );
+    }
+    return results;
+  }
+
+  /** 跑验收命令：shell 执行，返回退出码和输出末尾 */
+  runVerify(cmd, cwd, live) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      let out = '';
+      let timedOut = false;
+      let child;
+      try {
+        // detached：自成进程组，超时 / 停止时能把 npm test 拉起的子进程一起收掉
+        child = spawn(cmd, { cwd, env: buildEnv(), shell: true, windowsHide: true, detached: !isWin });
+      } catch (e) {
+        resolve({ code: -1, output: e.message, duration: 0 });
+        return;
+      }
+      const kill = () => {
+        try {
+          if (isWin) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+          else process.kill(-child.pid, 'SIGTERM');
+        } catch {}
+      };
+      live.killVerify = kill;
+      const push = (c) => {
+        out += c.toString('utf8');
+        if (out.length > VERIFY_OUTPUT_CHARS * 8) out = out.slice(-VERIFY_OUTPUT_CHARS * 4);
+      };
+      child.stdout.on('data', push);
+      child.stderr.on('data', push);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        kill();
+      }, VERIFY_TIMEOUT_MS);
+      if (timer.unref) timer.unref();
+      child.on('error', (e) => {
+        out += `\n${e.message}`;
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        live.killVerify = null;
+        resolve({
+          code: timedOut ? -1 : code == null ? -1 : code,
+          timedOut,
+          output: stripAnsi(out).trim().slice(-VERIFY_OUTPUT_CHARS),
+          duration: Date.now() - started,
+        });
+      });
+    });
+  }
+
+  /**
+   * 交班链自然结束后的验收。
+   * @returns {'passed'|'retry'|'failed'|'skipped'} retry 时已经把修复任务排进 queue
+   */
+  async verify(group, live, queue) {
+    const cmd = String(group.verifyCmd || '').trim();
+    if (!cmd) return 'skipped';
+    const leaderId = group.leaderId || (group.memberIds || [])[0];
+    const leader = this.getBot(leaderId);
+    const cwd = group.cwd || (leader && leader.cwd) || '';
+    if (!cwd || !fs.existsSync(cwd)) {
+      this.pushSystem(group.id, `设置了验收命令，但群和负责人都没有工作目录，跳过验收。`);
+      return 'skipped';
+    }
+    const max = Math.max(1, Number(group.verifyMax) || VERIFY_MAX_DEFAULT);
+    live.verifyAttempts = (live.verifyAttempts || 0) + 1;
+    this.emitState(group, { active: true, verifying: true, queue: [], turn: live.turn });
+
+    const r = await this.runVerify(cmd, cwd, live);
+    if (this.aborted.has(group.id)) return 'failed';
+    const passed = r.code === 0;
+    live.task.hop({
+      kind: 'verify',
+      botName: '验收',
+      startedAt: Date.now() - r.duration,
+      duration: r.duration,
+      status: passed ? 'done' : 'error',
+      endReason: passed ? 'passed' : r.timedOut ? 'timeout' : 'failed',
+      cmd,
+      exitCode: r.code,
+      output: r.output,
+      attempt: live.verifyAttempts,
+    });
+    const secs = (r.duration / 1000).toFixed(1);
+    if (passed) {
+      this.pushSystem(group.id, `✓ 验收通过：\`${cmd}\`（${secs}s）`);
+      return 'passed';
+    }
+    const why = r.timedOut ? `超过 ${Math.round(VERIFY_TIMEOUT_MS / 60000)} 分钟没结束` : `退出码 ${r.code}`;
+    const tail = r.output ? `\n\`\`\`\n${r.output}\n\`\`\`` : '';
+    const ownerId = (group.verifyOwner && group.memberIds.includes(group.verifyOwner) && group.verifyOwner) || leaderId;
+    const owner = this.getBot(ownerId);
+    if (live.verifyAttempts >= max || !owner) {
+      this.pushSystem(group.id, `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${why}，已达重试上限，停下等你处理。${tail}`);
+      return 'failed';
+    }
+    this.pushSystem(group.id, `✗ 验收未通过（${live.verifyAttempts}/${max}）：\`${cmd}\` ${why}，交回 ${owner.name} 修复。${tail}`);
+    queue.push({
+      botId: owner.id,
+      from: null,
+      verify: true,
+      text:
+        `【验收未通过】验收命令 \`${cmd}\` ${why}。输出末尾：${tail}\n`
+        + '请找到原因并修复。需要别人配合可以 @ 对方；修好后不用 @ 任何人，Baton 会自动重新验收。',
+    });
+    return 'retry';
   }
 
   async send(group, userText, userMsg) {
@@ -369,91 +620,138 @@ class Room {
 
     const queue = targets.map((id) => ({ botId: id, text: userText, from: null }));
     let turns = 0;
+    let endReason = 'done';
     const lastText = new Map(); // botId -> 上一轮的正文，用于识别原地打转
-    const live = { queue, notes: [], current: null, currentList: [], turn: 0 };
+    const task = new Task({ key: group.id, kind: 'group', title: group.name, userText });
+    const live = { queue, notes: [], current: null, currentList: [], turn: 0, task };
     this.live.set(group.id, live);
     this.emitState(group, { active: true, queue, turn: 0 });
+
+    // 一个 Bot 跑完之后的共同处理：收集决策、找下一个接手的人
+    const settle = (res) => {
+      const body = textOf(res.msg);
+      const decided = extractDecisions(body);
+      if (decided.length) this.mergeDecisions(group, decided);
+      return { body, next: this.pickHandoff(res.msg, group) };
+    };
 
     try {
       /* ---------------- 第一批：只有「用户一次 @ 了多个 Bot」才可能并发 ---------------- */
       // 交班链本身有依赖（后一个要读前一个的结论），所以永远串行；
       // 能并发的只有开头这几个「互不依赖、并列被点名」的成员。
       if (group.concurrent && queue.length > 1) {
-        if (this.canConcurrent(group, queue)) {
+        const plan = await this.planConcurrent(group, queue);
+        if (plan.mode) {
           const batch = queue.splice(0, queue.length);
           const bots = batch.map((j) => this.getBot(j.botId)).filter(Boolean);
           live.currentList = bots;
           live.turn = 1;
           this.emitState(group, { active: true, currentList: bots, queue: [], turn: 1 });
 
-          const results = await Promise.all(batch.map((job) => this.runJob(group, job, members, live)));
-          live.currentList = [];
+          let results = null;
+          if (plan.mode === 'worktree') results = await this.runWorktreeBatch(group, batch, members, live, plan);
+          if (!results && plan.mode === 'worktree') {
+            queue.push(...batch); // worktree 没建成，退回串行
+          } else {
+            if (!results) results = await Promise.all(batch.map((job) => this.runJob(group, job, members, live)));
+            live.currentList = [];
 
-          const handoffs = [];
-          for (const res of results) {
-            if (!res || this.aborted.has(group.id)) continue;
-            turns++;
-            const body = textOf(res.msg);
-            lastText.set(res.bot.id, body);
-            const decided = extractDecisions(body);
-            if (decided.length) this.mergeDecisions(group, decided);
-            const next = this.pickHandoff(res.msg, group);
-            if (next && !queue.some((j) => j.botId === next) && !handoffs.includes(next)) handoffs.push(next);
+            const handoffs = [];
+            for (const res of results) {
+              if (!res || this.aborted.has(group.id)) continue;
+              turns++;
+              const { body, next } = settle(res);
+              lastText.set(res.bot.id, body);
+              if (next) {
+                res.hop.endReason = 'handoff';
+                res.hop.to = (this.getBot(next) || {}).name || '';
+              } else if (!res.hop.endReason) res.hop.endReason = 'done';
+              if (next && !queue.some((j) => j.botId === next) && !handoffs.some((h) => h.botId === next)) {
+                handoffs.push({ botId: next, from: res.bot.id, changes: res.changes });
+              }
+            }
+            // 并发跑完的几个人谁要交班，按顺序排进队列，后面照常串行接力
+            for (const h of handoffs) queue.push({ botId: h.botId, text: userText, from: h.from, fromChanges: h.changes });
           }
-          // 并发跑完的几个人谁要交班，按顺序排进队列，后面照常串行接力
-          for (const id of handoffs) queue.push({ botId: id, text: userText, from: null });
         } else {
           this.pushSystem(
             group.id,
-            '并发已开启，但这几个成员共用同一个工作目录，本轮仍按串行执行 —— 同时改同一目录会互相覆盖。'
-              + '给每个 Bot 设置各自独立的目录后才会真正并行。'
+            plan.reason === 'noDir'
+              ? '并发已开启，但有成员没设置工作目录，本轮仍按串行执行。'
+              : '并发已开启，但这几个成员共用同一个目录且不是 git 仓库，本轮仍按串行执行 —— 同时改同一目录会互相覆盖。'
+                + '给每个 Bot 设置各自的目录，或把目录初始化成 git 仓库（会自动用 worktree 隔离），就能真正并行。'
           );
         }
       }
 
-      while (queue.length && turns < MAX_TURNS && !this.aborted.has(group.id)) {
-        const job = queue.shift();
-        const bot = this.getBot(job.botId);
-        if (!bot) continue;
-        live.current = bot;
-        live.turn = turns + 1;
+      for (;;) {
+        while (queue.length && turns < MAX_TURNS && !this.aborted.has(group.id)) {
+          const job = queue.shift();
+          const bot = this.getBot(job.botId);
+          if (!bot) continue;
+          live.current = bot;
+          live.turn = turns + 1;
 
-        // 告诉界面：当前轮到谁，后面还排着谁
-        this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
+          // 告诉界面：当前轮到谁，后面还排着谁
+          this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
 
-        const res = await this.runJob(group, job, members, live);
-        if (!res) continue;
-        turns++;
-        if (this.aborted.has(group.id)) break;
+          const res = await this.runJob(group, job, members, live);
+          if (!res) continue;
+          turns++;
+          if (this.aborted.has(group.id)) break;
 
-        // 原地打转：同一个 Bot 连续两次说的几乎一样，再排下去也只是烧 token
-        const body = textOf(res.msg);
-        const prev = lastText.get(bot.id);
-        if (prev && body.length >= STALL_MIN_CHARS && similarity(prev, body) >= STALL_SIMILARITY) {
-          this.pushSystem(
-            group.id,
-            `${bot.name} 这轮和上一轮说的几乎一样，判定为原地打转，已停下。换个更具体的要求，或 @ 另一个成员打破僵局。`
-          );
+          // 原地打转：同一个 Bot 连续两次说的几乎一样，再排下去也只是烧 token
+          const body = textOf(res.msg);
+          const prev = lastText.get(bot.id);
+          if (prev && body.length >= STALL_MIN_CHARS && similarity(prev, body) >= STALL_SIMILARITY) {
+            res.hop.endReason = 'stall';
+            endReason = 'stall';
+            this.pushSystem(
+              group.id,
+              `${bot.name} 这轮和上一轮说的几乎一样，判定为原地打转，已停下。换个更具体的要求，或 @ 另一个成员打破僵局。`
+            );
+            queue.length = 0;
+            break;
+          }
+          lastText.set(bot.id, body);
+
+          const { next } = settle(res);
+          if (next) {
+            res.hop.endReason = 'handoff';
+            res.hop.to = (this.getBot(next) || {}).name || '';
+            // 去重：这个 Bot 已经排在队列里（比如用户一开始就 @ 了它），就不重复入队
+            const alreadyQueued = queue.some((j) => j.botId === next);
+            if (!alreadyQueued) queue.push({ botId: next, text: job.text, from: bot.id, fromChanges: res.changes });
+          } else if (!res.hop.endReason) res.hop.endReason = 'done';
+        }
+
+        if (this.aborted.has(group.id)) {
+          endReason = 'stopped';
           break;
         }
-        lastText.set(bot.id, body);
-
-        const decided = extractDecisions(body);
-        if (decided.length) this.mergeDecisions(group, decided);
-
-        const next = this.pickHandoff(res.msg, group);
-        if (next) {
-          // 去重：这个 Bot 已经排在队列里（比如用户一开始就 @ 了它），就不重复入队
-          const alreadyQueued = queue.some((j) => j.botId === next);
-          if (!alreadyQueued) queue.push({ botId: next, text: job.text, from: bot.id });
+        if (endReason === 'stall') break;
+        if (queue.length) {
+          endReason = 'maxTurns';
+          this.pushSystem(group.id, `已经接力了 ${MAX_TURNS} 跳，先停在这里。看一下进展，需要的话再发一句让它们继续。`);
+          break;
         }
+        if (!turns) break; // 一个都没跑起来（比如 CLI 启动失败），验收没有意义
+        // 交班链自然结束：有验收命令就验收，不过就交回去修，修完再验
+        const v = await this.verify(group, live, queue);
+        if (v === 'retry' && !this.aborted.has(group.id)) continue;
+        if (this.aborted.has(group.id)) endReason = 'stopped';
+        else if (v === 'passed') endReason = 'verifyPassed';
+        else if (v === 'failed') endReason = 'verifyFailed';
+        break;
       }
     } finally {
+      task.finish(endReason);
       this.busy.delete(group.id);
       this.aborted.delete(group.id);
       this.live.delete(group.id);
       this.emitState(group, { active: false });
       this.onChange(group.id);
+      this.emit('runs:update', { key: group.id });
     }
 
     return { ok: true };
@@ -465,6 +763,9 @@ class Room {
    * @param {object} p {current: bot|null, currentList: bot[], queue: job[], turn: number}
    */
   emitState(group, p = {}) {
+    const live = this.live.get(group.id);
+    if (live && p.active !== false) live.lastState = p;
+    const totals = live && live.task ? live.task.totals() : null;
     const brief = (b) => (b ? { id: b.id, name: b.name, emoji: b.emoji, color: b.color } : null);
     const list = (p.currentList || (p.current ? [p.current] : [])).map(brief).filter(Boolean);
     const queued = (p.queue || [])
@@ -478,6 +779,8 @@ class Room {
       queue: queued,
       turn: p.turn || 0,
       maxTurns: MAX_TURNS,
+      verifying: !!p.verifying,
+      usage: totals ? { tokens: totals.usage.input + totals.usage.output, cost: totals.cost } : null,
     });
   }
 

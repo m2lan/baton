@@ -112,6 +112,7 @@
           </button>
           <button class="ghost-btn" @click="openEdit(active)">{{ t('sidebar.settings') }}</button>
         </template>
+        <button class="ghost-btn" @click="openRuns" :title="t('head.runsTip')">{{ t('head.runs') }}</button>
         <button class="ghost-btn" @click="exportChat" :title="t('head.exportTip')">{{ t('head.export') }}</button>
         <button class="ghost-btn" @click="clearChat">{{ t('head.clear') }}</button>
       </div>
@@ -257,11 +258,22 @@
               <div v-if="m.status!=='streaming'" class="as-foot">
                 <span v-if="m.meta?.model">{{shortModel(m.meta.model)}}</span>
                 <span v-if="m.duration">{{(m.duration/1000).toFixed(1)}}s</span>
+                <span v-if="m.meta?.tokens" :title="t('msg.tokensTip', {i: m.meta.tokens.input, o: m.meta.tokens.output, c: m.meta.tokens.cacheRead})">
+                  {{fmtTokens(sumTok(m.meta.tokens))}} tok
+                </span>
                 <span v-if="m.meta?.cost">${{m.meta.cost.toFixed(4)}}</span>
+                <button v-if="m.meta?.changes?.length" class="chg-btn" @click="openChanges[m.id] = !openChanges[m.id]">
+                  {{ t('msg.changes', {n: m.meta.changes.length}) }} {{openChanges[m.id] ? '▾' : '▸'}}
+                </button>
                 <span v-if="m.meta?.stopped" class="warn">已手动停止</span>
                 <span v-if="m.meta?.timeout" class="warn">已超时停止</span>
                 <span v-if="m.status==='error' && !m.meta?.timeout" class="err">执行失败</span>
                 <button class="link-btn" @click="copy(m)">复制</button>
+              </div>
+              <div v-if="openChanges[m.id] && m.meta?.changes?.length" class="chg-list">
+                <div v-for="c in m.meta.changes" :key="c.path" class="chg-row">
+                  <span class="chg-st" :class="'st-'+c.status">{{c.status}}</span><span class="chg-path">{{c.path}}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -301,7 +313,13 @@
           <span class="qb-label">{{ t('queue.queued') }}</span>
           <span v-for="q in roomProgress[active.id].queue" :key="q.id" class="qb-chip" :title="q.name">{{q.emoji}} {{q.name}}</span>
         </span>
+        <span class="qb-current" v-else-if="roomProgress[active.id].verifying">
+          <span class="qb-dot verify"></span><b>{{ t('queue.verifying') }}</b>
+        </span>
         <span class="qb-idle" v-else>{{ t('queue.idle') }}</span>
+        <span class="qb-usage" v-if="roomProgress[active.id].usage && roomProgress[active.id].usage.tokens">
+          {{ t('queue.usage', {tok: fmtTokens(roomProgress[active.id].usage.tokens)}) }}<template v-if="roomProgress[active.id].usage.cost"> · {{fmtCost(roomProgress[active.id].usage.cost)}}</template>
+        </span>
       </div>
 
       <!-- @ 成员选择 -->
@@ -435,6 +453,11 @@
           <label class="field">
             <span>角色设定 <em>可选，每轮都会带上</em></span>
             <textarea v-model="form.systemPrompt" rows="2" placeholder="比如：你是我的后端架构师，回答尽量短，先给结论。"></textarea>
+          </label>
+
+          <label class="field">
+            <span>{{ t('bot.env') }} <em>{{ t('bot.envHint') }}</em></span>
+            <textarea class="mono-area" v-model="form.env" rows="2" :placeholder="t('bot.envPlaceholder')" spellcheck="false"></textarea>
           </label>
 
           <div class="form-foot">
@@ -619,9 +642,33 @@
               <input type="checkbox" v-model="groupForm.concurrent" />
               <span class="sw-text">
                 允许并行
-                <small>只影响「你一次 @ 好几个 Bot」这一步；交班接力永远串行（后一个要读前一个的结论）。前提是每个成员有各自独立的目录 —— 共用目录时仍会自动退回串行，避免同时改同一份文件互相覆盖。</small>
+                <small>只影响「你一次 @ 好几个 Bot」这一步；交班接力永远串行（后一个要读前一个的结论）。前提是成员不会互相覆盖：要么各自有独立目录，要么共用同一个 git 仓库（见下方 worktree 选项）；都不满足时自动退回串行。</small>
               </span>
             </label>
+            <label class="sw-row" v-if="groupForm.concurrent">
+              <input type="checkbox" v-model="groupForm.worktree" />
+              <span class="sw-text">
+                {{ t('group.worktree') }}
+                <small>{{ t('group.worktreeHint') }}</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="field">
+            <span>{{ t('group.verify') }} <em>{{ t('group.verifyHint') }}</em></span>
+            <input class="mono-input" v-model="groupForm.verifyCmd" :placeholder="t('group.verifyPlaceholder')" spellcheck="false" />
+            <div class="verify-row" v-if="groupForm.verifyCmd.trim()">
+              <span class="vr-label">{{ t('group.verifyOwner') }}</span>
+              <div class="seg">
+                <button :class="{on: !groupForm.verifyOwner}" @click="groupForm.verifyOwner=''">{{ t('group.verifyLeader') }}</button>
+                <button v-for="b in groupForm.memberIds.map(id => bots.find(x => x.id === id)).filter(Boolean)"
+                        :key="b.id" :class="{on: groupForm.verifyOwner===b.id}" @click="groupForm.verifyOwner=b.id">
+                  {{b.emoji}} {{b.name}}
+                </button>
+              </div>
+              <span class="vr-label">{{ t('group.verifyMax') }}</span>
+              <input class="vr-num" type="number" min="1" max="10" v-model.number="groupForm.verifyMax" />
+            </div>
           </div>
 
           <div class="field" v-if="groupForm.id">
@@ -638,6 +685,138 @@
             <button class="primary" :disabled="!canSaveGroup" @click="saveGroup">{{groupForm.id ? '保存' : '创建群聊'}}</button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 运行记录 / 用量 ============ -->
+  <div v-if="modal==='runs'" class="modal-wrap" @click.self="modal=null">
+    <div class="modal wide runs-modal">
+      <header class="modal-head">
+        <div>
+          <h2>{{ t('runs.title') }}</h2>
+          <p>{{ t('runs.sub') }}</p>
+        </div>
+        <button class="icon-btn" @click="modal=null">✕</button>
+      </header>
+      <div class="runs-tabs">
+        <div class="seg">
+          <button :class="{on: runsView.tab==='task'}" @click="setRunsTab('task')">{{ t('runs.tabTasks') }}</button>
+          <button :class="{on: runsView.tab==='usage'}" @click="setRunsTab('usage')">{{ t('runs.tabUsage') }}</button>
+        </div>
+        <div v-if="runsView.tab==='usage'" class="seg days">
+          <button v-for="d in [1, 7, 30, 0]" :key="d" :class="{on: runsView.days===d}" @click="setUsageDays(d)">
+            {{ d===0 ? t('usage.all') : d===1 ? t('usage.today') : t('usage.days', {n: d}) }}
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- 本会话的任务 -->
+        <template v-if="runsView.tab==='task'">
+          <div v-if="!runsView.tasks.length" class="runs-empty">{{ t('runs.empty') }}</div>
+          <div v-for="tk in runsView.tasks" :key="tk.id" class="run-task" :class="{open: runsView.openTask===tk.id}">
+            <div class="rt-head" @click="runsView.openTask = runsView.openTask===tk.id ? '' : tk.id">
+              <span class="rt-time">{{fmtTime(tk.startedAt)}}</span>
+              <span class="rt-text">{{tk.userText}}</span>
+              <span class="rt-stat">{{ t('runs.hops', {n: tk.totals.hops}) }}</span>
+              <span class="rt-stat">{{fmtTokens(sumTok(tk.totals.usage))}} tok</span>
+              <span class="rt-stat">{{fmtCost(tk.totals.cost)}}</span>
+              <span class="rt-end" :class="'end-'+tk.endReason">{{endLabel(tk.endReason)}}</span>
+            </div>
+            <div v-if="runsView.openTask===tk.id" class="rt-body">
+              <div v-if="tk.totals.byBot.length > 1" class="rt-bots">
+                <span class="rt-bots-label">{{ t('runs.byBot') }}</span>
+                <div v-for="b in botShares(tk)" :key="b.botId" class="share-row">
+                  <span class="share-name">{{b.name}}</span>
+                  <span class="share-track"><span class="share-bar" :style="{width: b.pct + '%'}"></span></span>
+                  <span class="share-val">{{b.pct}}% · {{fmtTokens(b.tokens)}} · {{ t('runs.hops', {n: b.hops}) }}</span>
+                </div>
+              </div>
+              <div v-for="(h, i) in tk.hops" :key="i" class="hop" :class="{verify: h.kind==='verify'}">
+                <div class="hop-head" @click="toggleHop(tk.id, i)">
+                  <span class="hop-n">{{i + 1}}</span>
+                  <b class="hop-name">{{h.kind==='verify' ? t('runs.verify') : h.botName}}</b>
+                  <span class="hop-from" v-if="h.kind!=='verify' && h.from">← {{h.from}}</span>
+                  <span class="hop-tag" v-if="h.worktree">{{ t('runs.worktree') }}</span>
+                  <span class="hop-meta">{{fmtDur(h.duration)}}</span>
+                  <span class="hop-meta" v-if="h.usage" :title="t('msg.tokensTip', {i: h.usage.input, o: h.usage.output, c: h.usage.cacheRead})">{{fmtTokens(sumTok(h.usage))}} tok</span>
+                  <span class="hop-meta" v-if="h.kind!=='verify'" :title="h.cost==null ? t('runs.noCost') : ''">{{fmtCost(h.cost)}}</span>
+                  <span class="hop-meta" v-if="h.changes?.length">{{ t('msg.changes', {n: h.changes.length}) }}</span>
+                  <span class="rt-end" :class="'end-'+h.endReason">{{endLabel(h.endReason, h)}}</span>
+                </div>
+                <div v-if="openHop[tk.id+'_'+i]" class="hop-body tool-body">
+                  <template v-if="h.kind==='verify'">
+                    <div class="tool-sec"><em>{{h.cmd}} · {{ t('runs.exit', {n: h.exitCode}) }}</em><pre>{{h.output || '—'}}</pre></div>
+                  </template>
+                  <template v-else>
+                    <div v-if="h.changes?.length" class="tool-sec"><em>{{ t('runs.changes') }}</em><pre>{{h.changes.map(c => c.status + ' ' + c.path).join('\n')}}</pre></div>
+                    <div class="tool-sec"><em>{{ t('runs.prompt') }}<template v-if="h.model"> · {{shortModel(h.model)}}</template><template v-if="h.cwd"> · {{shortPath(h.cwd)}}</template></em><pre class="prompt-pre">{{h.prompt}}</pre></div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 用量汇总 -->
+        <template v-else-if="runsView.summary">
+          <div v-if="!runsView.summary.total.tasks" class="runs-empty">{{ t('usage.empty') }}</div>
+          <template v-else>
+            <div class="usage-cards">
+              <div class="u-card">
+                <b>{{fmtTokens(sumTok(runsView.summary.total.usage))}}</b>
+                <span>{{ t('usage.tokens') }}</span>
+                <small>{{ t('usage.tokensSub', {i: fmtTokens(runsView.summary.total.usage.input), o: fmtTokens(runsView.summary.total.usage.output)}) }}</small>
+              </div>
+              <div class="u-card">
+                <b>{{fmtTokens(runsView.summary.total.usage.cacheRead)}}</b>
+                <span>{{ t('usage.cache') }}</span>
+                <small>{{ t('usage.cacheSub') }}</small>
+              </div>
+              <div class="u-card">
+                <b>{{fmtCost(runsView.summary.total.cost || null)}}</b>
+                <span>{{ t('usage.cost') }}</span>
+                <small>{{ t('usage.costSub') }}</small>
+              </div>
+              <div class="u-card">
+                <b>{{runsView.summary.total.tasks}}</b>
+                <span>{{ t('usage.tasks') }}</span>
+                <small>{{ t('usage.tasksSub', {n: runsView.summary.total.hops}) }}</small>
+              </div>
+            </div>
+
+            <div class="u-chart" v-if="usageDays.length > 1">
+              <div class="u-chart-title">{{ t('usage.byDay') }}</div>
+              <div class="u-bars">
+                <div v-for="d in usageDays" :key="d.day" class="u-col" :title="d.label + ' · ' + fmtTokens(d.tokens) + ' tok' + (d.cost ? ' · ' + fmtCost(d.cost) : '')">
+                  <span class="u-bar" :style="{height: d.pct + '%'}" :class="{zero: !d.tokens}"></span>
+                </div>
+              </div>
+              <div class="u-axis"><span>{{usageDays[0].label}}</span><span>{{usageDays[usageDays.length - 1].label}}</span></div>
+            </div>
+
+            <div class="u-cols">
+              <div class="u-list">
+                <div class="u-list-title">{{ t('usage.byBot') }}</div>
+                <div v-for="b in runsView.summary.byBot" :key="b.botId" class="u-row">
+                  <span class="u-name">{{b.name}}</span>
+                  <span class="u-val">{{fmtTokens(sumTok(b.usage))}} tok</span>
+                  <span class="u-val">{{fmtCost(b.cost || null)}}</span>
+                </div>
+              </div>
+              <div class="u-list">
+                <div class="u-list-title">{{ t('usage.byConvo') }}</div>
+                <div v-for="k in runsView.summary.byKey" :key="k.key" class="u-row">
+                  <span class="u-name">{{k.title}}</span>
+                  <span class="u-val">{{ t('usage.taskCount', {n: k.tasks}) }}</span>
+                  <span class="u-val">{{fmtTokens(sumTok(k.usage))}} tok</span>
+                  <span class="u-val">{{fmtCost(k.cost || null)}}</span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </template>
       </div>
     </div>
   </div>

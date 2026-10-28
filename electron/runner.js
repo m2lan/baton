@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const net = require('net');
-const { createParser, stripAnsi } = require('./parsers');
+const { createParser, stripAnsi, normUsage } = require('./parsers');
 const { buildInvocation } = require('./agents');
 const proxy = require('./net');
 const platform = require('./platform');
@@ -62,6 +62,24 @@ function buildEnv(opts = {}) {
   return env;
 }
 
+/**
+ * Bot 设置里的环境变量：一行一个 KEY=VALUE，允许 export 前缀、引号和 # 注释。
+ * 典型用法是把某个 Bot 指到模型网关（ANTHROPIC_BASE_URL / OPENAI_BASE_URL 等）。
+ */
+function parseEnv(text) {
+  const out = {};
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.replace(/^export\s+/, '').match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    out[m[1]] = v;
+  }
+  return out;
+}
+
 function resolveBin(bin) {
   if (!bin) return null;
   if (path.isAbsolute(bin) && fs.existsSync(bin)) return bin;
@@ -89,7 +107,8 @@ function toCommandLine(file, args) {
 }
 
 function spawnCli(file, args, opts = {}) {
-  const env = buildEnv({ agentId: opts.agentId });
+  // Bot 自己的环境变量最后合并：用户显式写的，优先级高于代理等自动策略
+  const env = { ...buildEnv({ agentId: opts.agentId }), ...(opts.env || {}) };
   if (isWin) {
     return spawn(toCommandLine(file, args), {
       shell: true,
@@ -170,8 +189,9 @@ class Runner {
   }
 
   /**
-   * @param target {id, cwd, model, permission, systemPrompt, sessionId}
-   * @param opts   {key, sender}  key 决定会话归属（Bot 用 bot.id，群聊用 gid:botId）
+   * @param target {id, cwd, model, permission, systemPrompt, sessionId, env}
+   * @param opts   {key, sender, ephemeral}  key 决定会话归属（Bot 用 bot.id，群聊用 gid:botId）
+   *               ephemeral：不记 session id（worktree 里跑的会话换了目录，下次没法在原目录 resume）
    */
   async run(target, agent, prompt, opts = {}) {
     const key = opts.key || target.id;
@@ -201,7 +221,7 @@ class Runner {
 
     const msg = newMessage();
     if (opts.sender) msg.sender = opts.sender;
-    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false, key };
+    const ctx = { child: null, msg, stderr: [], stopped: false, dirty: false, key, ephemeral: !!opts.ephemeral };
     let doneResolve;
     ctx.done = new Promise((r) => (doneResolve = r));
     ctx.resolveDone = () => doneResolve(msg);
@@ -209,7 +229,7 @@ class Runner {
 
     let child;
     try {
-      child = spawnCli(resolved, inv.args, { cwd, agentId: agent.id });
+      child = spawnCli(resolved, inv.args, { cwd, agentId: agent.id, env: parseEnv(target.env) });
     } catch (e) {
       return { ok: false, error: `启动失败：${e.message}` };
     }
@@ -352,12 +372,16 @@ class Runner {
       session: (sid) => {
         if (!sid) return;
         msg.sessionId = sid;
-        this.onSession(key, sid);
+        if (!ctx.ephemeral) this.onSession(key, sid);
       },
       meta: (obj) => {
         msg.meta = msg.meta || {};
         for (const [k, v] of Object.entries(obj || {})) {
           if (v !== undefined && v !== null && v !== '') msg.meta[k] = v;
+        }
+        if (obj && obj.usage) {
+          const tokens = normUsage(obj.usage);
+          if (tokens) msg.meta.tokens = tokens;
         }
         emitMsg();
       },
@@ -415,4 +439,4 @@ class Runner {
   }
 }
 
-module.exports = { Runner, resolveBin, spawnCli, buildEnv, killTree, toCommandLine };
+module.exports = { Runner, resolveBin, spawnCli, buildEnv, parseEnv, killTree, toCommandLine };

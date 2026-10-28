@@ -179,10 +179,17 @@ createApp({
     let termObserver = null;
 
     const form = reactive({
-      agentId: '', name: '', emoji: '🤖', cwd: '', model: '', permission: 'auto', systemPrompt: '', id: '',
+      agentId: '', name: '', emoji: '🤖', cwd: '', model: '', permission: 'auto', systemPrompt: '', env: '', id: '',
     });
 
-    const groupForm = reactive({ id: '', name: '', cwd: '', memberIds: [], leaderId: '', concurrent: false, decisionsText: '' });
+    const groupForm = reactive({
+      id: '', name: '', cwd: '', memberIds: [], leaderId: '', concurrent: false, decisionsText: '',
+      worktree: true, verifyCmd: '', verifyMax: 3, verifyOwner: '',
+    });
+    // 运行记录弹窗：任务列表 / 用量汇总
+    const runsView = reactive({ tab: 'task', key: '', tasks: [], openTask: '', days: 7, summary: null });
+    const openHop = reactive({});
+    const openChanges = reactive({});
     const templates = ref([]);
     const creatingTpl = ref(false);
     const tplError = ref('');
@@ -400,6 +407,11 @@ createApp({
           running[ck] = false;
           upsert(ck, payload.msg);
           refreshBots();
+        } else if (channel === 'msg:update') {
+          // 改动清单是 CLI 退出后才算出来的，补到已显示的消息上
+          upsert(chatKeyOf(payload.key), payload.msg);
+        } else if (channel === 'runs:update') {
+          if (modal.value === 'runs' && runsView.key === payload.key) loadRuns();
         } else if (channel === 'room:state') {
           roomBusy[payload.key] = !!payload.active;
           if (payload.active) {
@@ -409,6 +421,8 @@ createApp({
               queue: payload.queue || [],
               turn: payload.turn || 0,
               maxTurns: payload.maxTurns || 0,
+              verifying: !!payload.verifying,
+              usage: payload.usage || null,
             };
           } else {
             delete roomProgress[payload.key];
@@ -490,6 +504,7 @@ createApp({
       form.model = '';
       form.permission = 'auto';
       form.systemPrompt = '';
+      form.env = '';
     }
 
     function openNew(preselect) {
@@ -508,6 +523,7 @@ createApp({
       form.model = bot.model || '';
       form.permission = bot.permission || 'auto';
       form.systemPrompt = bot.systemPrompt || '';
+      form.env = bot.env || '';
       modal.value = 'edit';
     }
 
@@ -551,6 +567,7 @@ createApp({
           model: form.model.trim(),
           permission: form.permission,
           systemPrompt: form.systemPrompt,
+          env: form.env,
         });
         bots.value = [bot, ...bots.value.filter((b) => b.id !== bot.id)];
         chats[bot.id] = [];
@@ -564,6 +581,7 @@ createApp({
           model: form.model.trim(),
           permission: form.permission,
           systemPrompt: form.systemPrompt,
+          env: form.env,
         };
         const bot = await window.lb.updateBot(form.id, patch);
         const i = bots.value.findIndex((b) => b.id === form.id);
@@ -615,6 +633,79 @@ createApp({
         console.warn(r.error);
         alert(r.error || '导出失败');
       }
+    }
+
+    /* -------- 运行记录 / 用量 -------- */
+    async function openRuns() {
+      if (!active.value) return;
+      runsView.key = active.value.id;
+      runsView.tab = 'task';
+      runsView.openTask = '';
+      modal.value = 'runs';
+      await loadRuns();
+    }
+
+    async function loadRuns() {
+      if (runsView.tab === 'task') {
+        runsView.tasks = (await window.lb.listRuns(runsView.key)) || [];
+        if (!runsView.openTask && runsView.tasks[0]) runsView.openTask = runsView.tasks[0].id;
+      } else {
+        runsView.summary = await window.lb.usageSummary(runsView.days);
+      }
+    }
+
+    function setRunsTab(tab) {
+      runsView.tab = tab;
+      loadRuns();
+    }
+
+    function setUsageDays(d) {
+      runsView.days = d;
+      loadRuns();
+    }
+
+    const toggleHop = (tid, i) => (openHop[tid + '_' + i] = !openHop[tid + '_' + i]);
+
+    function fmtTokens(n) {
+      n = Number(n) || 0;
+      if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k';
+      return String(n);
+    }
+    const fmtCost = (c) => (c == null ? '—' : '$' + Number(c).toFixed(c < 1 ? 4 : 2));
+    const fmtDur = (ms) => (ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s` : `${((ms || 0) / 1000).toFixed(1)}s`);
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      const p = (n) => String(n).padStart(2, '0');
+      return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    const endLabel = (r, h) => (r ? t('runs.end.' + r, { to: (h && h.to) || '' }) : '');
+    const sumTok = (u) => (u ? (u.input || 0) + (u.output || 0) : 0);
+
+    /** 按天柱状图：补齐没有记录的日子，空白天也占一格，时间轴才不会被压缩 */
+    const usageDays = computed(() => {
+      const s = runsView.summary;
+      if (!s) return [];
+      const map = Object.fromEntries((s.byDay || []).map((d) => [d.day, d]));
+      let span = runsView.days;
+      if (!span) span = Math.min(90, Math.max(1, s.byDay.length ? Math.ceil((Date.now() - new Date(s.byDay[0].day).getTime()) / 86400000) + 1 : 1));
+      const out = [];
+      const p = (n) => String(n).padStart(2, '0');
+      for (let i = span - 1; i >= 0; i--) {
+        const d = new Date(Date.now() - i * 86400000);
+        const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        const x = map[day];
+        out.push({ day, label: `${p(d.getMonth() + 1)}-${p(d.getDate())}`, tokens: x ? sumTok(x.usage) : 0, cost: x ? x.cost : 0 });
+      }
+      const max = Math.max(1, ...out.map((x) => x.tokens));
+      return out.map((x) => ({ ...x, pct: (x.tokens / max) * 100 }));
+    });
+
+    /** 某个任务里各 Bot 的 token 占比 */
+    function botShares(task) {
+      const list = (task.totals && task.totals.byBot) || [];
+      const total = list.reduce((a, b) => a + sumTok(b.usage), 0) || 1;
+      return list.map((b) => ({ ...b, tokens: sumTok(b.usage), pct: Math.round((sumTok(b.usage) / total) * 100) }));
     }
 
     async function clearChat() {      if (!active.value) return;
@@ -739,6 +830,10 @@ createApp({
       groupForm.leaderId = groupForm.memberIds[0] || '';
       groupForm.concurrent = false;
       groupForm.decisionsText = '';
+      groupForm.worktree = true;
+      groupForm.verifyCmd = '';
+      groupForm.verifyMax = 3;
+      groupForm.verifyOwner = '';
       modal.value = 'group';
     }
 
@@ -750,6 +845,10 @@ createApp({
       groupForm.leaderId = group.leaderId || groupForm.memberIds[0] || '';
       groupForm.concurrent = !!group.concurrent;
       groupForm.decisionsText = (group.decisions || []).join('\n');
+      groupForm.worktree = group.worktree !== false;
+      groupForm.verifyCmd = group.verifyCmd || '';
+      groupForm.verifyMax = group.verifyMax || 3;
+      groupForm.verifyOwner = group.verifyOwner || '';
       modal.value = 'group';
     }
 
@@ -795,6 +894,10 @@ createApp({
         memberIds: [...groupForm.memberIds],
         leaderId: groupForm.leaderId || groupForm.memberIds[0],
         concurrent: !!groupForm.concurrent,
+        worktree: !!groupForm.worktree,
+        verifyCmd: groupForm.verifyCmd.trim(),
+        verifyMax: Math.min(10, Math.max(1, Number(groupForm.verifyMax) || 3)),
+        verifyOwner: groupForm.memberIds.includes(groupForm.verifyOwner) ? groupForm.verifyOwner : '',
         decisions: groupForm.decisionsText
           .split('\n')
           .map((x) => x.trim())
@@ -1056,6 +1159,8 @@ createApp({
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
       t, langPref, langCode, langOptions, setLang,
+      runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
+      fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
     };
   },
 }).mount('#app');

@@ -206,6 +206,9 @@ function geminiParser(sink) {
 
 /* ---------------- OpenCode ---------------- */
 function opencodeParser(sink) {
+  // 每个 step 各报一次用量，要累加，不然只剩最后一步
+  const acc = { input: 0, output: 0, reasoning: 0, cache: { read: 0 } };
+  let cost = 0;
   return (line) => {
     const o = tryJson(line);
     if (!o) {
@@ -241,7 +244,13 @@ function opencodeParser(sink) {
       return;
     }
     if (o.type === 'step_finish') {
-      sink.meta({ usage: part.tokens, cost: part.cost });
+      const t = part.tokens || {};
+      acc.input += t.input || 0;
+      acc.output += t.output || 0;
+      acc.reasoning += t.reasoning || 0;
+      acc.cache.read += (t.cache && t.cache.read) || 0;
+      cost += part.cost || 0;
+      sink.meta({ usage: { ...acc, cache: { ...acc.cache } }, cost: cost || undefined });
     }
   };
 }
@@ -297,6 +306,45 @@ function genericParser(sink) {
   };
 }
 
+/**
+ * 各 CLI 的 usage 字段五花八门，归一成 {input, output, cacheRead}。
+ *   - input：没命中缓存的输入（含写缓存），这部分才是按全价算的
+ *   - cacheRead：命中缓存的输入，单独列出，不然长会话的 input 看起来大得吓人
+ * Claude 的 input_tokens 本身不含缓存；Codex 的 input_tokens 含 cached_input_tokens，要减掉。
+ */
+function normUsage(u) {
+  if (!u || typeof u !== 'object') return null;
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  // OpenCode: {input, output, reasoning, cache: {read, write}}
+  if ('input' in u || 'output' in u) {
+    return {
+      input: n(u.input) + n(u.cache && u.cache.write),
+      output: n(u.output) + n(u.reasoning),
+      cacheRead: n(u.cache && u.cache.read),
+    };
+  }
+  // Gemini 有时按模型分组：{models: {name: {tokens: {...}}}}
+  if (u.models && typeof u.models === 'object') {
+    const out = { input: 0, output: 0, cacheRead: 0 };
+    for (const m of Object.values(u.models)) {
+      const x = normUsage((m && m.tokens) || m);
+      if (!x) continue;
+      out.input += x.input;
+      out.output += x.output;
+      out.cacheRead += x.cacheRead;
+    }
+    return out.input || out.output || out.cacheRead ? out : null;
+  }
+  const cacheRead = n(u.cache_read_input_tokens) || n(u.cached_input_tokens) || n(u.cached) || n(u.cachedContentTokenCount);
+  let input = n(u.input_tokens) || n(u.prompt_tokens) || n(u.prompt) || n(u.promptTokenCount);
+  if (u.cached_input_tokens || u.cached || u.cachedContentTokenCount) input = Math.max(0, input - cacheRead);
+  input += n(u.cache_creation_input_tokens);
+  const output = (n(u.output_tokens) || n(u.completion_tokens) || n(u.candidates) || n(u.candidatesTokenCount))
+    + n(u.thoughtsTokenCount); // Gemini 的思考 token 单独计；Codex 的 reasoning 已含在 output_tokens 里
+  if (!input && !output && !cacheRead) return null;
+  return { input, output, cacheRead };
+}
+
 function createParser(proto, sink) {
   switch (proto) {
     case 'claude':
@@ -313,4 +361,4 @@ function createParser(proto, sink) {
   }
 }
 
-module.exports = { createParser, stripAnsi };
+module.exports = { createParser, stripAnsi, normUsage };
