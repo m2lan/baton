@@ -113,11 +113,36 @@ function resolveBin(bin) {
   return null;
 }
 
+/**
+ * Windows 命令行参数转义。两条规则叠加：
+ *   1) 含空白 / 引号 / cmd 元字符（& | < > ^ ( )）的参数必须整段包进双引号 ——
+ *      引号内 cmd 才把这些字符当字面量，否则 prompt 里的 & 会把命令截成两段；
+ *   2) 引号内按 CRT 规则处理反斜杠：引号前的反斜杠翻倍、末尾反斜杠翻倍。
+ *      不做这一步的话，参数末尾的 \ 会把收尾引号转义掉，后面整条命令都错位。
+ * 已知限制：%VAR% 在 cmd 里即使包在引号内也会展开，换行也会被当成命令分隔符。
+ * 所以支持 stdin 的 CLI（claude / codex）prompt 一律走 stdin —— 这条路径碰不到这些问题。
+ */
 function quoteCmd(s) {
   const str = String(s);
   if (str === '') return '""';
-  if (/[\s"&|<>^%()]/.test(str)) return `"${str.replace(/"/g, '\\"')}"`;
-  return str;
+  if (!/[ \t\n\v"&|<>^()]/.test(str)) return str;
+  let out = '"';
+  let slashes = 0;
+  for (const ch of str) {
+    if (ch === '\\') {
+      slashes++;
+      continue;
+    }
+    if (ch === '"') {
+      out += '\\'.repeat(slashes * 2 + 1) + '"';
+      slashes = 0;
+      continue;
+    }
+    out += '\\'.repeat(slashes) + ch;
+    slashes = 0;
+  }
+  out += '\\'.repeat(slashes * 2) + '"';
+  return out;
 }
 
 function toCommandLine(file, args) {
@@ -128,6 +153,11 @@ function spawnCli(file, args, opts = {}) {
   // Bot 自己的环境变量最后合并：用户显式写的，优先级高于代理等自动策略
   const env = { ...buildEnv({ agentId: opts.agentId }), ...(opts.env || {}) };
   if (isWin) {
+    // .exe 不需要 cmd 中转：直接传参数数组，引号、&、% 都不会被 shell 改写
+    if (/\.exe$/i.test(file)) {
+      return spawn(file, args, { cwd: opts.cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    }
+    // .cmd / .bat（npm 全局装的垫片）只能经 cmd.exe，参数按 quoteCmd 拼
     return spawn(toCommandLine(file, args), {
       shell: true,
       cwd: opts.cwd,
@@ -136,15 +166,52 @@ function spawnCli(file, args, opts = {}) {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
-  return spawn(file, args, { cwd: opts.cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  // detached：自成进程组，停止 / 超时能把 CLI 拉起的子进程一起收掉。
+  // stdio 仍是管道，读写行为不变。
+  return spawn(file, args, { cwd: opts.cwd, env, windowsHide: true, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
+/**
+ * 收掉 CLI 及其子进程。
+ * 只发 SIGTERM 不够：有的 CLI / 测试进程不理会，或者孙进程占着管道导致 close 一直不来，
+ * 上层 await 就会永远挂住（群聊 busy 再也清不掉）。所以 3 秒后升级 SIGKILL。
+ */
 function killTree(child) {
-  if (!child || child.killed) return;
-  try {
-    if (isWin) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-    else child.kill('SIGTERM');
-  } catch {}
+  if (!child || !child.pid) return;
+  const pid = child.pid;
+
+  if (isWin) {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+    } catch {}
+    try {
+      child.kill();
+    } catch {}
+    return;
+  }
+
+  // 进程组优先（spawnCli 用 detached 建的组）；组不存在时退回直接杀子进程
+  const group = (sig) => {
+    try {
+      process.kill(-pid, sig);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!group('SIGTERM')) {
+    try {
+      child.kill('SIGTERM');
+    } catch {}
+  }
+  const hard = setTimeout(() => {
+    if (!group('SIGKILL')) {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+    }
+  }, 3000);
+  if (hard.unref) hard.unref();
 }
 
 /* ---------------- 消息组装 ---------------- */
@@ -203,7 +270,19 @@ class Runner {
     if (!ctx) return false;
     ctx.stopped = true;
     killTree(ctx.child);
+    this.watchdog(key, ctx);
     return true;
+  }
+
+  /**
+   * 进程已被杀，但 close 迟迟不来（孙进程占着 stdio）时强制结算。
+   * 否则 ctx.done 永远不 resolve，群聊这一轮会一直停在 busy。
+   */
+  watchdog(key, ctx) {
+    const t = setTimeout(() => {
+      if (this.running.get(key) === ctx && !ctx.finished) this.finish(key, ctx, -1);
+    }, 8000);
+    if (t.unref) t.unref();
   }
 
   /**
@@ -262,6 +341,7 @@ class Runner {
       ctx.dirty = true;
       sink.error(text);
       killTree(child);
+      this.watchdog(key, ctx);
     };
     ctx.timer = setTimeout(
       () => timeoutKill(L(
@@ -464,8 +544,13 @@ class Runner {
   }
 
   finish(key, ctx, code) {
+    // error 与 close 可能先后都触发（spawn 失败时），强制结算也可能补一次；
+    // 重复结算会把同一条消息追加两遍
+    if (ctx.finished) return;
+    ctx.finished = true;
     const msg = ctx.msg;
-    this.running.delete(key);
+    // 只删自己那一条：万一旧进程的 close 迟到，不能把新一轮的 ctx 删掉
+    if (this.running.get(key) === ctx) this.running.delete(key);
     if (ctx.idleTimer) {
       clearTimeout(ctx.idleTimer);
       ctx.idleTimer = null;

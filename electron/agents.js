@@ -22,7 +22,7 @@ const CATALOG = [
     install: { kind: 'npm', pkg: '@anthropic-ai/claude-code' },
     login: 'claude',
     docs: 'https://claude.com/claude-code',
-    models: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+    models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
   },
   {
     id: 'codebuddy',

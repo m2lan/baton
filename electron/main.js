@@ -271,6 +271,9 @@ function updateGroup(id, patch) {
 
 /* ---------------- 安装 ---------------- */
 let installing = null;
+// 单聊里「正在拍快照 / 正准备启动」的 key：run:start 之前就能挡住重复发送，
+// 否则大仓库里几秒的空窗会让人连按两次，最后一条报「正在执行上一条任务」
+const startingChats = new Set();
 
 function installAgent(agentId) {
   const agent = getAgent(agentId);
@@ -372,10 +375,86 @@ const room = new Room({
   },
 });
 
+/**
+ * 单 Bot 的一轮：拍快照 → 拉起 CLI → 结束后算改动、记运行日志。
+ * 由 chat:send 在把用户消息回给界面之后异步调用：大仓库的 git add -A 要好几秒，
+ * 不能挡着「已发送」的反馈（以前发送按钮会像卡住一样）。
+ */
+async function runSingle(key, bot, agent, text, startedAt, who) {
+  const repo = await git.repoRoot(bot.cwd);
+  const before = await git.snapshot(repo);
+  // 上一轮还没跑完时 runner 会拒绝，这时别登记新任务，免得顶掉正在跑的那条实时记录
+  const task = runner.isRunning(key) ? null : new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
+  if (task) task.setRunning(bot.id, { kind: 'bot', ...who, from: '用户', startedAt, prompt: text });
+
+  let r;
+  try {
+    r = await runner.run(bot, agent, text, { key });
+  } catch (e) {
+    if (task) task.finish('error');
+    throw e;
+  }
+  if (!r.ok) {
+    if (task) task.finish('error');
+    const errMsg = {
+      id: `m_${Date.now().toString(36)}err`,
+      role: 'assistant',
+      parts: [{ type: 'text', text: r.error }],
+      status: 'error',
+      createdAt: Date.now(),
+    };
+    store.appendMessage(key, errMsg);
+    emit('msg:update', { key, msg: errMsg });
+    return;
+  }
+
+  try {
+    const msg = await r.done;
+    const after = before ? await git.snapshot(repo) : null;
+    const changes = after ? await git.changedFiles(repo, before, after) : [];
+    if (changes.length) {
+      msg.meta = { ...(msg.meta || {}), changes: changes.slice(0, 80) };
+      const list = store.getMessages(key);
+      const i = list.findIndex((m) => m.id === msg.id);
+      if (i >= 0) {
+        list[i] = msg;
+        store.saveMessages(key, list);
+      }
+      emit('msg:update', { key, msg });
+    }
+    if (!task) return;
+    const meta = msg.meta || {};
+    const endReason = meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done';
+    task.clearRunning(bot.id);
+    task.hop({
+      ...who,
+      from: '用户',
+      startedAt,
+      duration: msg.duration || Date.now() - startedAt,
+      status: msg.status,
+      endReason,
+      usage: meta.tokens || null,
+      cost: typeof meta.cost === 'number' ? meta.cost : null,
+      model: meta.model || bot.model || '',
+      prompt: text,
+      msgId: msg.id,
+      cwd: bot.cwd,
+      changes,
+    });
+    task.finish(endReason);
+  } catch (e) {
+    if (task) task.finish('error');
+    throw e;
+  }
+}
+
 /* ---------------- IPC ---------------- */
 function registerIpc() {
   ipcMain.handle('app:init', () => {
-    state = store.loadState();
+    // 不要在这里重读磁盘：渲染层每次 run:done 都会调本接口刷新列表。
+    // 重读会把 state 换成新对象，正在跑的群聊还攥着旧 group，
+    // mergeDecisions 写进旧对象、persist() 却写新对象，决策板上的决策就丢了。
+    // state 在 whenReady 里加载一次，之后内存里的才是准的。
     lang.setLang(state.settings.lang);
     // v1 曾经把默认值写成全局直连（会剥掉海外 CLI 的代理），这里一次性迁回「智能」
     const savedProxy = state.settings.proxy;
@@ -614,64 +693,29 @@ function registerIpc() {
     bot.preview = text.slice(0, 60);
     persist();
 
-    // 单 Bot 也记运行日志：一问一答就是一次任务，顺带记下这一轮改了哪些文件
-    const repo = await git.repoRoot(bot.cwd);
-    const before = await git.snapshot(repo);
+    // 单 Bot 也记运行日志：一问一答就是一次任务，顺带记下这一轮改了哪些文件。
+    // 快照和 CLI 启动放到后台按顺序做，先把用户消息回给界面。
     const startedAt = Date.now();
     const who = { botId: bot.id, botName: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId };
-    // 上一轮还没跑完时 runner 会拒绝，这时别登记新任务，免得顶掉正在跑的那条实时记录
-    const task = runner.isRunning(key) ? null : new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
-    if (task) task.setRunning(bot.id, { kind: 'bot', ...who, from: '用户', startedAt, prompt: text });
-    const r = await runner.run(bot, agent, text, { key });
-    if (!r.ok && task) task.finish('error');
-    if (r.ok && task) {
-      r.done
-        .then(async (msg) => {
-          const after = before ? await git.snapshot(repo) : null;
-          const changes = after ? await git.changedFiles(repo, before, after) : [];
-          if (changes.length) {
-            msg.meta = { ...(msg.meta || {}), changes: changes.slice(0, 80) };
-            const list = store.getMessages(key);
-            const i = list.findIndex((m) => m.id === msg.id);
-            if (i >= 0) {
-              list[i] = msg;
-              store.saveMessages(key, list);
-            }
-            emit('msg:update', { key, msg });
-          }
-          const meta = msg.meta || {};
-          task.clearRunning(bot.id);
-          task.hop({
-            ...who,
-            from: '用户',
-            startedAt,
-            duration: msg.duration || Date.now() - startedAt,
-            status: msg.status,
-            endReason: meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done',
-            usage: meta.tokens || null,
-            cost: typeof meta.cost === 'number' ? meta.cost : null,
-            model: meta.model || bot.model || '',
-            prompt: text,
-            msgId: msg.id,
-            cwd: bot.cwd,
-            changes,
-          });
-          task.finish(meta.timeout ? 'timeout' : meta.stopped ? 'stopped' : msg.status === 'error' ? 'error' : 'done');
-        })
-        .catch((e) => logFatal('runlog', e));
-    }
-    if (!r.ok) {
+    if (runner.isRunning(key) || startingChats.has(key)) {
+      // 上一轮还在跑（或还在拍快照）：和以前一样，把用户消息留下，再补一条错误提示
+      const error = L('正在执行上一条任务', 'Still running the previous task');
       const errMsg = {
         id: `m_${Date.now().toString(36)}err`,
         role: 'assistant',
-        parts: [{ type: 'text', text: r.error }],
+        parts: [{ type: 'text', text: error }],
         status: 'error',
         createdAt: Date.now(),
       };
       store.appendMessage(key, errMsg);
-      return { ok: false, error: r.error, userMsg, errMsg };
+      emit('msg:update', { key, msg: errMsg });
+      return { ok: false, error, userMsg, errMsg };
     }
-    return { ok: true, userMsg, msgId: r.msg.id };
+    startingChats.add(key);
+    runSingle(key, bot, agent, text, startedAt, who)
+      .catch((e) => logFatal('chat:send', e))
+      .finally(() => startingChats.delete(key));
+    return { ok: true, userMsg };
   });
 
   ipcMain.handle('dialog:pickDir', async () => {
@@ -839,13 +883,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'win32') app.setAppUserModelId('com.baton.app');
+  // 旧版本叫 LocalBot：必须先迁移，再读 state，否则第一次升级启动会读到空数据
+  migrateLegacyData();
+  // 整个进程只从磁盘读这一次；之后 state 是唯一事实来源（见 app:init 的说明）
+  state = store.loadState();
   // 外观设置要在建窗口前生效：窗口底色、标题栏都跟它走（默认跟随系统）
-  const bootSettings = store.loadState().settings || {};
+  const bootSettings = state.settings || {};
   nativeTheme.themeSource = bootSettings.theme || 'system';
   lang.setLang(bootSettings.lang); // 更新模块等启动时就会产出提示，语言要先定下来
-  if (process.platform === 'win32') app.setAppUserModelId('com.baton.app');
-  // 旧版本叫 LocalBot，先迁移数据再让 store 读
-  migrateLegacyData();
   logLine('boot', `v${app.getVersion()} packaged=${app.isPackaged} shot=${SHOT || '-'} argv=${JSON.stringify(process.argv)}`);
   registerIpc();
   createWindow();

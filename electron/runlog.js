@@ -66,12 +66,21 @@ function totalsOf(task) {
       cost += h.cost;
       costKnown = true;
     }
-    const b = byBot[h.botId] || (byBot[h.botId] = { botId: h.botId, name: h.botName, agentId: h.agentId, hops: 0, usage: emptyUsage(), cost: 0 });
+    const b = byBot[h.botId] || (byBot[h.botId] = { botId: h.botId, name: h.botName, agentId: h.agentId, hops: 0, usage: emptyUsage(), cost: 0, costKnown: false });
     b.hops++;
     addUsage(b.usage, h.usage);
-    if (typeof h.cost === 'number') b.cost += h.cost;
+    if (typeof h.cost === 'number') {
+      b.cost += h.cost;
+      b.costKnown = true;
+    }
   }
-  return { usage, cost: costKnown ? cost : null, byBot: Object.values(byBot), hops: (task.hops || []).filter((h) => h.kind === 'bot').length };
+  return {
+    usage,
+    // null 表示这批跳一个都没报费用，和「费用是 0」区分开，界面显示 —
+    cost: costKnown ? cost : null,
+    byBot: Object.values(byBot).map(({ costKnown, ...b }) => ({ ...b, cost: costKnown ? b.cost : null })),
+    hops: (task.hops || []).filter((h) => h.kind === 'bot').length,
+  };
 }
 
 class Task {
@@ -140,6 +149,9 @@ class Task {
   }
 
   finish(endReason) {
+    // 结算可能被不同路径各调一次（正常结束 / 异常兜底），重复写会把同一条任务记两遍
+    if (this.finished) return this.data;
+    this.finished = true;
     this.data.finishedAt = Date.now();
     this.data.endReason = endReason || this.data.endReason || 'done';
     this.running.clear();
@@ -171,10 +183,16 @@ function summary(days) {
   try {
     files = fs.readdirSync(dir()).filter((f) => f.endsWith('.json'));
   } catch {}
-  const total = { usage: emptyUsage(), cost: 0, tasks: 0, hops: 0 };
+  const total = { usage: emptyUsage(), cost: 0, costKnown: false, tasks: 0, hops: 0 };
   const byKey = {};
   const byBot = {};
   const byDay = {};
+  // 费用只有部分 CLI 报：一个都没报时合计是「未知」而不是 0，界面据此显示 —
+  const addCost = (bucket, cost) => {
+    if (typeof cost !== 'number') return;
+    bucket.cost += cost;
+    bucket.costKnown = true;
+  };
   for (const f of files) {
     const key = f.slice(0, -5);
     for (const t of read(key)) {
@@ -183,30 +201,31 @@ function summary(days) {
       total.tasks++;
       total.hops += tt.hops;
       addUsage(total.usage, tt.usage);
-      if (tt.cost) total.cost += tt.cost;
-      const k = byKey[key] || (byKey[key] = { key, title: t.title, tasks: 0, usage: emptyUsage(), cost: 0 });
+      addCost(total, tt.cost);
+      const k = byKey[key] || (byKey[key] = { key, title: t.title, tasks: 0, usage: emptyUsage(), cost: 0, costKnown: false });
       k.tasks++;
       addUsage(k.usage, tt.usage);
-      if (tt.cost) k.cost += tt.cost;
+      addCost(k, tt.cost);
       for (const b of tt.byBot) {
-        const x = byBot[b.botId] || (byBot[b.botId] = { botId: b.botId, name: b.name, agentId: b.agentId, hops: 0, usage: emptyUsage(), cost: 0 });
+        const x = byBot[b.botId] || (byBot[b.botId] = { botId: b.botId, name: b.name, agentId: b.agentId, hops: 0, usage: emptyUsage(), cost: 0, costKnown: false });
         x.hops += b.hops;
         addUsage(x.usage, b.usage);
-        x.cost += b.cost;
+        addCost(x, b.cost);
       }
       const d = new Date(t.startedAt);
       const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const y = byDay[day] || (byDay[day] = { day, usage: emptyUsage(), cost: 0 });
+      const y = byDay[day] || (byDay[day] = { day, usage: emptyUsage(), cost: 0, costKnown: false });
       addUsage(y.usage, tt.usage);
-      if (tt.cost) y.cost += tt.cost;
+      addCost(y, tt.cost);
     }
   }
   const tok = (u) => u.input + u.output;
+  const settle = (list) => list.map(({ costKnown, ...x }) => ({ ...x, cost: costKnown ? x.cost : null }));
   return {
-    total,
-    byKey: Object.values(byKey).sort((a, b) => tok(b.usage) - tok(a.usage)),
-    byBot: Object.values(byBot).sort((a, b) => tok(b.usage) - tok(a.usage)),
-    byDay: Object.values(byDay).sort((a, b) => (a.day < b.day ? -1 : 1)),
+    total: settle([total])[0],
+    byKey: settle(Object.values(byKey)).sort((a, b) => tok(b.usage) - tok(a.usage)),
+    byBot: settle(Object.values(byBot)).sort((a, b) => tok(b.usage) - tok(a.usage)),
+    byDay: settle(Object.values(byDay)).sort((a, b) => (a.day < b.day ? -1 : 1)),
   };
 }
 

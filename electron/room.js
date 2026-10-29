@@ -94,6 +94,10 @@ function findMentions(text, members) {
   const src = String(text || '');
   const hits = [];
   const taken = new Array(src.length).fill(false);
+  // 名字后面紧跟字母/数字/下划线，说明这是另一个更长的单词（@A 命中 @Alice）。
+  // 只认 ASCII：中文常写成「@张三请看一下」，中间没有空格，不能算边界；
+  // 代价是「@张三丰」也会命中成员「张三」，这个取舍偏向日常写法。
+  const isNameChar = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
 
   const ordered = [...members].sort((a, b) => (b.name || '').length - (a.name || '').length);
   for (const m of ordered) {
@@ -104,6 +108,10 @@ function findMentions(text, members) {
       const idx = src.indexOf('@' + name, from);
       if (idx === -1) break;
       const end = idx + 1 + name.length;
+      if (isNameChar(src[end])) {
+        from = end;
+        continue;
+      }
       let overlap = false;
       for (let i = idx; i < end; i++) if (taken[i]) overlap = true;
       if (!overlap) {
@@ -123,13 +131,21 @@ class Room {
     this.getBot = getBot;
     this.emit = emit;
     this.onChange = onChange || (() => {});
-    this.aborted = new Set();
     this.busy = new Set();
     this.live = new Map(); // gid -> 当前轮次的可变状态（队列、插话），供中途介入用
   }
 
   isBusy(gid) {
     return this.busy.has(gid);
+  }
+
+  /**
+   * 这一轮还是当前这一轮吗？
+   * stop 之后 live 被摘掉、或者用户马上又发了一句顶掉它，旧循环都必须自己收尾。
+   * 不能用全局 aborted 标记：新一轮发起时会清它，旧循环就会误以为还能继续跑。
+   */
+  isCurrent(gid, live) {
+    return this.live.get(gid) === live;
   }
 
   /**
@@ -141,8 +157,12 @@ class Room {
   interject(group, text) {
     const live = this.live.get(group.id);
     if (!live) return { ok: false, error: L('这个群正在跑上一轮', 'This room is still running the previous turn') };
-    live.notes.push(text);
-    if (!live.queue.length) {
+    if (live.queue.length) {
+      // 后面还排着人：挂到下一棒的「执行中补充」里，由 runJob 消费
+      live.notes.push(text);
+    } else {
+      // 队列空了：这句话得有人接，排给负责人。不要再同时写进 notes，
+      // 否则下一棒的任务文本和补充里各有一份，模型会看到两遍。
       const leader = group.leaderId || (group.memberIds || [])[0];
       if (leader) live.queue.push({ botId: leader, text, from: null });
     }
@@ -151,14 +171,15 @@ class Room {
   }
 
   stop(gid) {
-    this.aborted.add(gid);
     const live = this.live.get(gid);
     if (live && live.killVerify) live.killVerify();
     for (const key of this.runner.running.keys()) {
       if (key.startsWith(`${gid}:`)) this.runner.stop(key);
     }
-    this.busy.delete(gid);
+    // 先摘掉 live 再清 busy：在跑的循环看到自己已不是当前这一轮，会自然收尾；
+    // 即便用户紧接着又发了一句，新旧两轮也不会共用 busy / live。
     this.live.delete(gid);
+    this.busy.delete(gid);
     this.emit('room:state', { key: gid, active: false, current: null, queue: [] });
     return true;
   }
@@ -184,16 +205,24 @@ class Room {
     const clip = (s) => (s.length > CTX_MSG_CHARS ? s.slice(0, CTX_MSG_CHARS) + '…' : s);
 
     /* ---- ① 用户需求锚点 ---- */
+    // 从最新往回取：群聊跑久了，用户最近说的话才是这一轮真正要做的。
+    // 旧的写法从最早往后取、一超预算就 break，聊过几轮之后最新的要求反而被丢掉，
+    // Bot 会一直围着最早那句需求打转。
     const asks = [];
     let budget = CTX_BUDGET_ASK;
-    for (const m of all) {
+    for (let i = all.length - 1; i >= 0 && budget > 0; i--) {
+      const m = all[i];
       if (m.role !== 'user') continue;
       const body = textOf(m);
       if (!body) continue;
-      const line = `用户: ${clip(body)}`;
-      if (line.length > budget) break;
+      let line = `用户: ${clip(body)}`;
+      if (line.length > budget) {
+        // 最新一条自己也放不下：截断保留开头（那句通常就是要求本身），更早的不再挤进来
+        if (asks.length || budget < 200) break;
+        line = line.slice(0, Math.max(0, budget - 1)) + '…';
+      }
       budget -= line.length;
-      asks.push(line);
+      asks.unshift(line); // unshift 保持时间顺序，模型读起来是「先早后晚」
     }
 
     /* ---- ③ 最近几条完整对话（先算，给 ② 做去重） ---- */
@@ -375,6 +404,8 @@ class Room {
       return null;
     }
     if (!group.memberIds.includes(bot.id)) return null;
+    // 已经 stop / 被新一轮顶掉：排队中的任务不要再真的拉起 CLI
+    if (!this.isCurrent(group.id, live)) return null;
 
     // 用户在这期间补充的要求，显式塞进本轮任务（光靠上下文层容易被当成背景信息忽略）
     let jobText = job.text;
@@ -441,7 +472,7 @@ class Room {
       worktree: !!wt,
       changes,
     });
-    this.emitState(group, live.lastState || {});
+    this.emitState(group, live.lastState || {}, live);
     return { bot, msg, hop, after, changes };
   }
 
@@ -476,7 +507,7 @@ class Room {
     for (let i = 0; i < prepared.length; i++) {
       const res = results[i];
       const wt = prepared[i].worktree;
-      if (res && res.after && res.after !== base && !this.aborted.has(group.id)) {
+      if (res && res.after && res.after !== base && this.isCurrent(group.id, live)) {
         const patch = await git.diffPatch(root, base, res.after);
         const ap = await git.applyPatch(root, patch);
         if (ap.ok) merged.push(res.bot.name);
@@ -515,7 +546,23 @@ class Room {
       const started = Date.now();
       let out = '';
       let timedOut = false;
+      let settled = false;
       let child;
+      let timer = null;
+      let killTimer = null;
+      let forceTimer = null;
+
+      const output = () => stripAnsi(out).trim().slice(-VERIFY_OUTPUT_CHARS);
+      const done = (r) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(killTimer);
+        clearTimeout(forceTimer);
+        if (live.killVerify === kill) live.killVerify = null;
+        resolve(r);
+      };
+
       try {
         // detached：自成进程组，超时 / 停止时能把 npm test 拉起的子进程一起收掉
         child = spawn(cmd, { cwd, env: buildEnv(), shell: true, windowsHide: true, detached: !isWin });
@@ -523,11 +570,38 @@ class Room {
         resolve({ code: -1, output: e.message, duration: 0 });
         return;
       }
+
+      /**
+       * 先 SIGTERM，3 秒后升级 SIGKILL。
+       * 10 秒还没 close（孙进程占着 stdio 时很常见）就直接结算，
+       * 否则这个 await 会永远不返回，整条交班链和 busy 一起卡死。
+       */
       const kill = () => {
+        if (isWin) {
+          try {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+          } catch {}
+          return;
+        }
         try {
-          if (isWin) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-          else process.kill(-child.pid, 'SIGTERM');
-        } catch {}
+          process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          try {
+            child.kill('SIGTERM');
+          } catch {}
+        }
+        killTimer = setTimeout(() => {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            try {
+              child.kill('SIGKILL');
+            } catch {}
+          }
+        }, 3000);
+        if (killTimer.unref) killTimer.unref();
+        forceTimer = setTimeout(() => done({ code: -1, timedOut, output: output(), duration: Date.now() - started }), 10000);
+        if (forceTimer.unref) forceTimer.unref();
       };
       live.killVerify = kill;
       const push = (c) => {
@@ -536,7 +610,7 @@ class Room {
       };
       child.stdout.on('data', push);
       child.stderr.on('data', push);
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         timedOut = true;
         kill();
       }, VERIFY_TIMEOUT_MS);
@@ -545,12 +619,10 @@ class Room {
         out += `\n${e.message}`;
       });
       child.on('close', (code) => {
-        clearTimeout(timer);
-        live.killVerify = null;
-        resolve({
+        done({
           code: timedOut ? -1 : code == null ? -1 : code,
           timedOut,
-          output: stripAnsi(out).trim().slice(-VERIFY_OUTPUT_CHARS),
+          output: output(),
           duration: Date.now() - started,
         });
       });
@@ -573,12 +645,12 @@ class Room {
     }
     const max = Math.max(1, Number(group.verifyMax) || VERIFY_MAX_DEFAULT);
     live.verifyAttempts = (live.verifyAttempts || 0) + 1;
-    this.emitState(group, { active: true, verifying: true, queue: [], turn: live.turn });
+    this.emitState(group, { active: true, verifying: true, queue: [], turn: live.turn }, live);
 
     live.task.setRunning('verify', { kind: 'verify', botName: '验收', cmd, attempt: live.verifyAttempts });
     const r = await this.runVerify(cmd, cwd, live);
     live.task.clearRunning('verify');
-    if (this.aborted.has(group.id)) return 'failed';
+    if (!this.isCurrent(group.id, live)) return 'failed';
     const passed = r.code === 0;
     live.task.hop({
       kind: 'verify',
@@ -634,7 +706,6 @@ class Room {
     }
     if (this.busy.has(group.id)) return this.interject(group, userText);
 
-    this.aborted.delete(group.id);
     this.busy.add(group.id);
 
     const mentioned = findMentions(userText, members);
@@ -648,7 +719,9 @@ class Room {
     const task = new Task({ key: group.id, kind: 'group', title: group.name, userText });
     const live = { queue, notes: [], current: null, currentList: [], turn: 0, task };
     this.live.set(group.id, live);
-    this.emitState(group, { active: true, queue, turn: 0 });
+    // 这一轮的身份（见 isCurrent）：被 stop 或被新一轮顶掉后，旧循环靠它收尾
+    const isCurrent = () => this.isCurrent(group.id, live);
+    this.emitState(group, { active: true, queue, turn: 0 }, live);
 
     // 一个 Bot 跑完之后的共同处理：收集决策、找下一个接手的人
     const settle = (res) => {
@@ -670,7 +743,7 @@ class Room {
           const bots = batch.map((j) => this.getBot(j.botId)).filter(Boolean);
           live.currentList = bots;
           live.turn = 1;
-          this.emitState(group, { active: true, currentList: bots, queue: [], turn: 1 });
+          this.emitState(group, { active: true, currentList: bots, queue: [], turn: 1 }, live);
 
           let results = null;
           if (plan.mode === 'worktree') results = await this.runWorktreeBatch(group, batch, members, live, plan);
@@ -682,7 +755,7 @@ class Room {
 
             const handoffs = [];
             for (const res of results) {
-              if (!res || this.aborted.has(group.id)) continue;
+              if (!res || !isCurrent()) continue;
               turns++;
               const { body, next } = settle(res);
               lastText.set(res.bot.id, body);
@@ -713,7 +786,7 @@ class Room {
       }
 
       for (;;) {
-        while (queue.length && turns < MAX_TURNS && !this.aborted.has(group.id)) {
+        while (queue.length && turns < MAX_TURNS && isCurrent()) {
           const job = queue.shift();
           const bot = this.getBot(job.botId);
           if (!bot) continue;
@@ -721,12 +794,15 @@ class Room {
           live.turn = turns + 1;
 
           // 告诉界面：当前轮到谁，后面还排着谁
-          this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 });
+          this.emitState(group, { active: true, current: bot, queue, turn: turns + 1 }, live);
 
           const res = await this.runJob(group, job, members, live);
           if (!res) continue;
           turns++;
-          if (this.aborted.has(group.id)) break;
+          if (!isCurrent()) {
+            endReason = 'stopped';
+            break;
+          }
 
           // 原地打转：同一个 Bot 连续两次说的几乎一样，再排下去也只是烧 token
           const body = textOf(res.msg);
@@ -756,7 +832,7 @@ class Room {
           } else if (!res.hop.endReason) res.hop.endReason = 'done';
         }
 
-        if (this.aborted.has(group.id)) {
+        if (!isCurrent()) {
           endReason = 'stopped';
           break;
         }
@@ -772,18 +848,21 @@ class Room {
         if (!turns) break; // 一个都没跑起来（比如 CLI 启动失败），验收没有意义
         // 交班链自然结束：有验收命令就验收，不过就交回去修，修完再验
         const v = await this.verify(group, live, queue);
-        if (v === 'retry' && !this.aborted.has(group.id)) continue;
-        if (this.aborted.has(group.id)) endReason = 'stopped';
+        if (v === 'retry' && isCurrent()) continue;
+        if (!isCurrent()) endReason = 'stopped';
         else if (v === 'passed') endReason = 'verifyPassed';
         else if (v === 'failed') endReason = 'verifyFailed';
         break;
       }
     } finally {
       task.finish(endReason);
-      this.busy.delete(group.id);
-      this.aborted.delete(group.id);
-      this.live.delete(group.id);
-      this.emitState(group, { active: false });
+      // 只有自己还是当前这一轮，才清 busy / live / 界面状态。
+      // 否则会把「stop 之后马上又发的那一轮」一起清掉：界面显示空闲、实际还在跑。
+      if (isCurrent()) {
+        this.emitState(group, { active: false }, live);
+        this.live.delete(group.id);
+        this.busy.delete(group.id);
+      }
       this.onChange(group.id);
     }
 
@@ -794,8 +873,10 @@ class Room {
    * 广播群聊进度，让界面知道「谁在跑、还有谁排队」
    * @param {object} group
    * @param {object} p {current: bot|null, currentList: bot[], queue: job[], turn: number}
+   * @param {object} liveRef 传了就做身份校验：旧一轮（已 stop / 已被顶掉）的迟到更新直接丢弃
    */
-  emitState(group, p = {}) {
+  emitState(group, p = {}, liveRef) {
+    if (liveRef && this.live.get(group.id) !== liveRef) return;
     const live = this.live.get(group.id);
     if (live && p.active !== false) live.lastState = p;
     const totals = live && live.task ? live.task.totals() : null;
