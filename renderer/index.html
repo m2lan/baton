@@ -225,7 +225,15 @@
           <div v-if="m.role==='system'" class="sys-note">{{m.parts[0].text}}</div>
 
           <div v-else-if="m.role==='user'" class="user-wrap">
-            <div class="bubble user-bubble" v-html="renderUserText(m.parts[0].text)"></div>
+            <div v-if="m.parts[0].text" class="bubble user-bubble" v-html="renderUserText(m.parts[0].text)"></div>
+            <div v-if="fileParts(m).length" class="msg-files">
+              <div v-for="(f, i) in fileParts(m)" :key="i" class="msg-file" @click="previewFile(f)" :title="f.kind==='image' ? t('composer.preview') : t('composer.openAttach')">
+                <img v-if="f.kind==='image'" :src="fileUrl(f.path)" class="msg-thumb" alt="" />
+                <span v-else class="msg-file-ico">📄</span>
+                <span class="msg-file-name">{{f.name}}</span>
+                <span class="msg-file-size">{{fmtSize(f.size)}}</span>
+              </div>
+            </div>
             <div class="user-foot">
               <button class="link-btn" @click="copy(m)">{{ copied[m.id] ? t('common.copied') : t('common.copy') }}</button>
             </div>
@@ -338,16 +346,27 @@
         </span>
       </div>
 
-      <!-- @ 成员选择 -->
+      <!-- @ 成员 / 文件选择 -->
       <div v-if="mention.open && mention.list.length" class="mention-pop">
-        <div v-for="(m, i) in mention.list" :key="m.id" class="mention-item" :class="{on: i===mention.index}" @mousedown.prevent="applyMention(m)">
+        <div v-for="(m, i) in mention.list" :key="m.id" class="mention-item" :class="{on: i===mention.index, file: m.kind==='file'}" @mousedown.prevent="applyMention(m)">
           <span class="mi-emoji">{{m.emoji}}</span>
           <span class="mi-name">{{m.name}}</span>
-          <span class="mi-cli">{{agentNameOf(m)}}</span>
+          <span class="mi-cli">{{ m.kind === 'file' ? t('composer.fileItem') : (m.agentName || '') }}</span>
         </div>
       </div>
 
       <div class="composer-box" :class="{busy: isBusy(active.id)}">
+        <!-- 待发送的附件：已经复制进附件目录，发送后只把路径写进 prompt -->
+        <div v-if="attachments.length" class="attach-row">
+          <div v-for="(f, i) in attachments" :key="f.path" class="attach-chip" :title="f.name" @click="previewFile(f)">
+            <img v-if="f.kind==='image'" :src="fileUrl(f.path)" class="attach-thumb" alt="" />
+            <span v-else class="attach-ico">📄</span>
+            <span class="attach-name">{{ f.name }}</span>
+            <span class="attach-size">{{ fmtSize(f.size) }}</span>
+            <button class="attach-x" @click.stop="removeAttachment(i)" :title="t('composer.removeAttach')">×</button>
+          </div>
+        </div>
+        <div v-if="attachError" class="attach-err">{{ attachError }}</div>
         <textarea
           ref="ta"
           v-model="draft"
@@ -355,6 +374,7 @@
           rows="1"
           @input="onDraftInput"
           @keydown="onKey"
+          @paste="onPaste"
         ></textarea>
         <div class="composer-bar">
           <div class="chips" v-if="active.kind==='group'">
@@ -367,10 +387,11 @@
             <span class="chip" @click="openEdit(active)">🛡 {{permLabel(active.permission)}}</span>
             <span class="chip" @click="openFolder(active)">📁 {{shortPath(active.cwd)}}</span>
           </div>
+          <button class="attach-btn" @click="pickAttachments" :disabled="attachBusy" :title="t('composer.attachTip')">📎</button>
           <button v-if="isBusy(active.id)" class="send stop" @click="stop" :title="t('composer.stop')">
             <span class="square"></span>
           </button>
-          <button class="send" :disabled="!draft.trim()" @click="send" :title="isBusy(active.id) ? t('composer.queueSend') : t('composer.send')">
+          <button class="send" :disabled="!draft.trim() && !attachments.length" @click="send" :title="isBusy(active.id) ? t('composer.queueSend') : t('composer.send')">
             <svg viewBox="0 0 24 24" class="ico"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg>
           </button>
         </div>
@@ -890,6 +911,27 @@
         </template>
       </div>
     </div>
+  </div>
+
+  <!-- 拖拽提示：文件松手就进当前会话 -->
+  <div v-if="dragging" class="drop-veil">
+    <div class="drop-box">
+      <div class="drop-ico">📎</div>
+      <div class="drop-title">{{ active ? t('composer.dropTitle') : t('composer.dropNoChat') }}</div>
+      <div v-if="active" class="drop-sub">{{ t('composer.dropSub') }}</div>
+    </div>
+  </div>
+
+  <!-- 图片预览 -->
+  <div v-if="preview.open" class="lightbox" @click="closePreview">
+    <header class="lightbox-head" @click.stop>
+      <span class="lightbox-name">{{ preview.name }}</span>
+      <span class="lightbox-actions">
+        <button class="ghost-btn" @click="openAttachment(preview.path)">{{ t('composer.openAttach') }}</button>
+        <button class="icon-btn" @click="closePreview">✕</button>
+      </span>
+    </header>
+    <img class="lightbox-img" :src="fileUrl(preview.path)" :alt="preview.name" />
   </div>
 </div>
 

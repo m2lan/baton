@@ -78,6 +78,15 @@ const DICT = {
     'composer.queueSend': '排到当前任务之后',
     'composer.membersChip': '{n} 个成员',
     'composer.atChip': '@ 指定谁回答',
+    'composer.fileItem': '文件',
+    'composer.attachTip': '添加附件（也可以把文件拖进来，或粘贴截图）',
+    'composer.removeAttach': '移除附件',
+    'composer.openAttach': '在文件夹中显示',
+    'composer.preview': '预览图片',
+    'composer.maxFiles': '一次最多 {n} 个附件',
+    'composer.dropTitle': '松手添加到这条会话',
+    'composer.dropSub': '文件会复制进附件目录，原文件不动',
+    'composer.dropNoChat': '先选一个会话再拖文件进来',
     'composer.defaultModel': '默认模型',
 
     // ---------- 进度条 ----------
@@ -385,6 +394,15 @@ const DICT = {
     'composer.membersChip': '{n} members',
     'composer.membersChip.one': '1 member',
     'composer.atChip': '@ to pick who answers',
+    'composer.fileItem': 'File',
+    'composer.attachTip': 'Attach files (or drag them in, or paste a screenshot)',
+    'composer.removeAttach': 'Remove attachment',
+    'composer.openAttach': 'Show in folder',
+    'composer.preview': 'Preview image',
+    'composer.maxFiles': 'Up to {n} files at a time',
+    'composer.dropTitle': 'Drop to add to this chat',
+    'composer.dropSub': 'A copy lands in the attachments folder; the original stays put',
+    'composer.dropNoChat': 'Pick a chat first, then drop files',
     'composer.defaultModel': 'Default model',
 
     // ---------- progress bar ----------

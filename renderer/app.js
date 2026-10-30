@@ -179,6 +179,9 @@ createApp({
     const roomProgress = reactive({});
     const query = ref('');
     const draft = ref('');
+    // 待发送的附件：文件已经复制进附件目录，这里只保留元数据
+    const attachments = ref([]);
+    const attachBusy = ref(false);
     const modal = ref(null);
     const installing = reactive({});
     const installLog = ref([]);
@@ -231,6 +234,8 @@ createApp({
     const creatingTpl = ref(false);
     const tplError = ref('');
     const mention = reactive({ open: false, query: '', index: 0, list: [] });
+    let mentionFilesTimer = null;
+    let mentionSeq = 0; // 文件候选是异步回来的，用它丢掉过期的结果
 
     // 跟着语言变：做成计算属性，切换语言时重新生成
     const perms = computed(() => [
@@ -575,8 +580,10 @@ createApp({
 
     async function select(id) {
       if (term.open && id !== activeId.value) closeTerm();
+      // 切走时没发出去的附件直接收掉；点回当前会话不该误删
+      if (activeId.value && id !== activeId.value) discardPending();
       activeId.value = id;
-      mention.open = false;
+      closeMention();
       Object.keys(openThink).forEach((k) => delete openThink[k]);
       Object.keys(openTool).forEach((k) => delete openTool[k]);
       if (!chats[id]) chats[id] = await window.lb.getMessages(id);
@@ -691,22 +698,186 @@ createApp({
     /* -------- 会话 -------- */
     async function send() {
       const text = draft.value.trim();
-      if (!text || !active.value) return;
+      const pending = attachments.value.slice();
+      if ((!text && !pending.length) || !active.value) return;
       const conv = active.value;
       // 群聊在跑的时候允许插话：消息会排到当前轮之后，由下一个接手的 Bot 读到。
       // 单 Bot 没有队列概念，只能等这一轮结束。
       if (isBusy(conv.id) && conv.kind !== 'group') return;
-      mention.open = false;
+      closeMention();
       draft.value = '';
+      attachments.value = [];
       autoGrow();
       stick.value = true;
-      const r = await window.lb.send(conv.id, text);
+      const r = await window.lb.send(conv.id, text, pending);
       if (r.userMsg) upsert(conv.id, r.userMsg);
       if (r.errMsg) upsert(conv.id, r.errMsg);
+      if (r.error && !r.userMsg) attachments.value = pending; // 没发出去就把附件还回去
       if (r.group) roomBusy[conv.id] = true;
       scrollBottom(true);
       if (r.error) console.warn(r.error);
     }
+
+    /* -------- 附件 -------- */
+    const attachError = ref('');
+    let attachErrTimer = null;
+    function showAttachError(msg) {
+      attachError.value = String(msg || '');
+      clearTimeout(attachErrTimer);
+      attachErrTimer = setTimeout(() => {
+        attachError.value = '';
+      }, 6000);
+    }
+
+    // 和主进程 files.MAX_FILES 保持一致
+    const MAX_PENDING = 20;
+    function addAttachResult(r) {
+      if (!r) return;
+      if (Array.isArray(r.attachments) && r.attachments.length) {
+        // 同一个文件再拖一次不该出现两个 chip：同名同大小视为同一份
+        const seen = new Set(attachments.value.map((a) => `${a.name}:${a.size}`));
+        const fresh = [];
+        const dropped = [];
+        let full = false;
+        for (const a of r.attachments) {
+          const sig = `${a.name}:${a.size}`;
+          if (seen.has(sig)) {
+            dropped.push(a.path);
+            continue;
+          }
+          if (attachments.value.length + fresh.length >= MAX_PENDING) {
+            dropped.push(a.path);
+            full = true;
+            continue;
+          }
+          seen.add(sig);
+          fresh.push(a);
+        }
+        // 重复的 / 超出上限的副本已经复制进附件目录了，这里直接删掉
+        if (dropped.length) window.lb.discardAttachments(dropped);
+        if (fresh.length) attachments.value.push(...fresh);
+        if (full) showAttachError(t('composer.maxFiles', { n: MAX_PENDING }));
+        else if (fresh.length) attachError.value = '';
+      }
+      if (r.errors && r.errors.length) showAttachError(r.errors[0]);
+    }
+
+    /** 没发出去的附件直接从磁盘收掉，别在附件目录里越攒越多 */
+    function discardPending() {
+      const list = attachments.value.slice();
+      attachments.value = [];
+      if (list.length) window.lb.discardAttachments(list.map((a) => a.path));
+    }
+
+    /**
+     * 复制文件是异步的，这期间用户可能已经切到别的会话。
+     * 结果只认发起时的那条会话；否则这些副本没人引用，直接删掉。
+     */
+    function attachResultFor(conv, r) {
+      if (active.value && active.value.id === conv.id) return true;
+      if (r && Array.isArray(r.attachments) && r.attachments.length) {
+        window.lb.discardAttachments(r.attachments.map((a) => a.path));
+      }
+      return false;
+    }
+
+    async function pickAttachments() {
+      const conv = active.value;
+      if (!conv || attachBusy.value) return;
+      attachBusy.value = true;
+      try {
+        const r = await window.lb.pickAttachments(conv.id);
+        if (attachResultFor(conv, r)) addAttachResult(r);
+      } catch (e) {
+        showAttachError(e && e.message);
+      } finally {
+        attachBusy.value = false;
+      }
+    }
+
+    async function addAttachmentPaths(paths) {
+      const conv = active.value;
+      const list = (paths || []).filter(Boolean);
+      if (!conv || !list.length) return;
+      try {
+        const r = await window.lb.addAttachments(conv.id, list);
+        if (attachResultFor(conv, r)) addAttachResult(r);
+      } catch (e) {
+        showAttachError(e && e.message);
+      }
+    }
+
+    function removeAttachment(i) {
+      const [f] = attachments.value.splice(i, 1);
+      if (f) window.lb.discardAttachments([f.path]);
+    }
+
+    /** 粘贴截图 / 从剪贴板粘贴文件：字节交给主进程写盘 */
+    async function onPaste(e) {
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      const blobs = [];
+      for (const it of items) {
+        if (it.kind !== 'file') continue;
+        const f = it.getAsFile();
+        if (f) blobs.push(f);
+      }
+      if (!blobs.length || !active.value) return;
+      e.preventDefault();
+      const conv = active.value;
+      const payload = [];
+      for (const f of blobs.slice(0, 5)) {
+        payload.push({
+          name: f.name || (String(f.type).startsWith('image/') ? `pasted-${Date.now()}.png` : 'pasted-file'),
+          data: new Uint8Array(await f.arrayBuffer()),
+        });
+      }
+      try {
+        const r = await window.lb.saveAttachments(conv.id, payload);
+        if (attachResultFor(conv, r)) addAttachResult(r);
+      } catch (err) {
+        showAttachError(err && err.message);
+      }
+    }
+
+    /** 文件拖进窗口时亮一层提示，不然用户不知道松手会发生什么 */
+    const dragging = ref(false);
+    let dragDepth = 0;
+    const hasFiles = (e) => {
+      const dt = e.dataTransfer;
+      return !!dt && Array.from(dt.types || []).includes('Files');
+    };
+
+    async function onDrop(e) {
+      const list = (e.dataTransfer && e.dataTransfer.files) || [];
+      if (!list.length) return;
+      const paths = [...list].map((f) => window.lb.pathForFile(f)).filter(Boolean);
+      await addAttachmentPaths(paths);
+    }
+
+    /* -------- 图片预览 -------- */
+    const preview = reactive({ open: false, path: '', name: '' });
+    function previewFile(f) {
+      if (f && f.kind === 'image') {
+        preview.open = true;
+        preview.path = f.path;
+        preview.name = f.name || '';
+        return;
+      }
+      if (f && f.path) openAttachment(f.path);
+    }
+    function closePreview() {
+      preview.open = false;
+      preview.path = '';
+    }
+
+    const fileParts = (m) => (m.parts || []).filter((p) => p.type === 'file');
+    const fileUrl = (p) => window.lb.fileUrl(p);
+    const fmtSize = (n) => {
+      if (!n) return '';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+      return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    };
 
     function stop() {
       if (active.value) window.lb.stop(active.value.id);
@@ -1097,35 +1268,71 @@ createApp({
     }
 
     /* -------- @ 成员 -------- */
+    /** @ 弹层：群聊先列成员，再列当前目录下的文件；单聊只列文件 */
+    function mentionCwd(a) {
+      if (a.kind === 'group') return a.cwd || ((a.members && a.members[0] && a.members[0].cwd) || '');
+      return a.cwd || '';
+    }
+
+    function closeMention() {
+      mentionSeq++;
+      clearTimeout(mentionFilesTimer);
+      mention.open = false;
+    }
+
     function refreshMention() {
       const a = active.value;
-      if (!a || a.kind !== 'group' || !ta.value) {
-        mention.open = false;
+      if (!a || !ta.value) {
+        closeMention();
         return;
       }
       const pos = ta.value.selectionStart || 0;
       const before = draft.value.slice(0, pos);
-      const m = before.match(/@([^\s@]{0,16})$/);
+      const m = before.match(/@([^\s@，。！？；：、（）【】「」《》]{0,80})$/);
       if (!m) {
-        mention.open = false;
+        closeMention();
         return;
       }
-      const q = m[1].toLowerCase();
-      mention.query = m[1];
-      mention.list = a.members.filter((x) => {
+      const raw = m[1];
+      const q = raw.toLowerCase();
+      const members = (a.kind === 'group' ? (a.members || []).filter((x) => {
         if (!q) return true;
         return x.name.toLowerCase().includes(q) || String(agentNameOf(x) || '').toLowerCase().includes(q);
-      });
+      }) : []).map((x) => ({
+        kind: 'member', id: x.id, name: x.name, emoji: x.emoji, agentName: agentNameOf(x), member: x,
+      }));
+      mention.query = raw;
+      mention.list = members;
       mention.index = 0;
-      mention.open = mention.list.length > 0;
+      mention.open = members.length > 0;
+
+      // 文件候选异步补在后面：列表在主进程里按目录缓存，这里只做过滤
+      const cwd = mentionCwd(a);
+      const seq = ++mentionSeq;
+      clearTimeout(mentionFilesTimer);
+      if (!cwd) return;
+      mentionFilesTimer = setTimeout(async () => {
+        let rels = [];
+        try {
+          rels = await window.lb.listFiles(cwd, raw);
+        } catch {}
+        if (seq !== mentionSeq) return;
+        const items = (rels || []).slice(0, 8).map((rel) => ({
+          kind: 'file', id: `f:${rel}`, name: rel, path: rel, emoji: '📄',
+        }));
+        mention.list = [...members, ...items];
+        mention.open = mention.list.length > 0;
+      }, 120);
     }
 
-    function applyMention(member) {
+    function applyMention(item) {
+      if (!item) return;
       const el = ta.value;
       const pos = el ? el.selectionStart || 0 : draft.value.length;
-      const head = draft.value.slice(0, pos).replace(/@([^\s@]{0,16})$/, `@${member.name} `);
+      const insert = item.kind === 'file' ? `@${item.path} ` : `@${item.name} `;
+      const head = draft.value.slice(0, pos).replace(/@([^\s@，。！？；：、（）【】「」《》]{0,80})$/, insert);
       draft.value = head + draft.value.slice(pos);
-      mention.open = false;
+      closeMention();
       nextTick(() => {
         if (!el) return;
         el.focus();
@@ -1170,6 +1377,7 @@ createApp({
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
           const n = mention.list.length;
+          if (!n) return;
           const d = e.key === 'ArrowDown' ? 1 : -1;
           mention.index = (mention.index + d + n) % n;
           return;
@@ -1182,7 +1390,7 @@ createApp({
         }
         if (e.key === 'Escape') {
           e.preventDefault();
-          mention.open = false;
+          closeMention();
           return;
         }
       }
@@ -1300,14 +1508,40 @@ createApp({
 
     const openTerminal = (bot, login) => window.lb.openTerminal(bot.id, !!login);
     const openFolder = (bot) => window.lb.openFolder(bot.cwd);
+    const openAttachment = (p) => window.lb.openAttachment(p);
     const openExternal = (url) => window.lb.openExternal(url);
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') modal.value = null;
+      if (e.key === 'Escape') {
+        if (preview.open) closePreview();
+        else modal.value = null;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         openNew();
       }
+    });
+
+    // 拖文件到窗口任意位置都不要让 Chromium 去导航成 file://，统一由这里接住
+    window.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      dragDepth++;
+      dragging.value = true;
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) dragging.value = false;
+    });
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (hasFiles(e) && e.dataTransfer) e.dataTransfer.dropEffect = active.value ? 'copy' : 'none';
+    });
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      dragging.value = false;
+      if (active.value) onDrop(e);
     });
 
     boot();
@@ -1321,10 +1555,12 @@ createApp({
       quickStartCLIs,
       select, refreshBots, refreshAgents, openNew, openEdit, closeModals, pickAgent,
       install, pickDir, save, removeBot, send, stop, clearChat, exportChat, autoGrow, onKey, toggle,
-      openTerminal, openFolder, openExternal, render: renderMd, onScroll, starters, useStarter,
+      openTerminal, openFolder, openAttachment, openExternal, render: renderMd, onScroll, starters, useStarter,
       term, termEl, openTerm, closeTerm, restartTerm, sendSlashLogin, openTermFor,
       groups, groupForm, canSaveGroup, openGroupNew, openGroupEdit, toggleMember, pickGroupDir,
       saveGroup, removeGroup, mention, applyMention, onDraftInput, isBusy, convos, roomProgress, roomBusy,
+      attachments, attachBusy, attachError, pickAttachments, removeAttachment, onPaste, onDrop, fileParts, fileUrl, fmtSize,
+      dragging, preview, previewFile, closePreview,
       templates, creatingTpl, tplError, useTemplate,
       leaderName, placeholder, senderOf, agentNameOf, renderUserText,
       settings, netForm, netHint, diag, diagRows, diagBusy, openSettings, saveNet, runDiagnose, useDirect, overrideList, clearOverride,

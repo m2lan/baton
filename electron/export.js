@@ -95,9 +95,14 @@ function buildMarkdown({ kind, title, group, bot, agentName, messages = [] }) {
     out.push(`### ${who} · ${fmtTime(m.createdAt)}${dur}${stop}`, '');
 
     const tools = [];
+    const files = [];
     for (const part of m.parts || []) {
       if (part.type === 'text' && part.text) out.push(part.text, '');
       else if (part.type === 'tool') tools.push(part);
+      else if (part.type === 'file') files.push(part);
+    }
+    if (files.length) {
+      out.push(files.map((f) => `- 📎 ${f.name} — \`${f.path}\``).join('\n'), '');
     }
     if (tools.length) out.push(renderTools(tools), '');
 

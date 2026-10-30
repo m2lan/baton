@@ -308,6 +308,8 @@ class Runner {
       model: target.model,
       permission: target.permission,
       systemPrompt: target.systemPrompt,
+      extraDirs: target.extraDirs,
+      images: target.images,
     });
 
     // 固定端口的 CLI（如 codebuddy 默认 61172）要和宿主 app 抢，这里换一个空闲的

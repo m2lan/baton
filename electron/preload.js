@@ -1,5 +1,6 @@
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { pathToFileURL } = require('url');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 
@@ -16,10 +17,32 @@ contextBridge.exposeInMainWorld('lb', {
   updateBot: (id, patch) => invoke('bots:update', id, patch),
   deleteBot: (id) => invoke('bots:delete', id),
   getMessages: (botId) => invoke('chat:get', botId),
-  send: (key, text) => invoke('chat:send', { key, text }),
+  send: (key, text, attachments) => invoke('chat:send', { key, text, attachments }),
   stop: (botId) => invoke('chat:stop', botId),
   clear: (botId) => invoke('chat:clear', botId),
   exportChat: (key) => invoke('chat:export', key),
+  listFiles: (cwd, q) => invoke('files:list', { cwd, q }),
+  pickAttachments: (key) => invoke('attach:pick', key),
+  addAttachments: (key, paths) => invoke('attach:add', { key, paths }),
+  saveAttachments: (key, items) => invoke('attach:save', { key, items }),
+  discardAttachments: (paths) => invoke('attach:discard', paths),
+  openAttachment: (p) => invoke('attach:open', p),
+  // 同步转成 file://，界面里直接当图片 src 用
+  fileUrl: (p) => {
+    try {
+      return pathToFileURL(String(p)).href;
+    } catch {
+      return '';
+    }
+  },
+  // 拖进来的 File 只有渲染层拿得到，转成绝对路径交给主进程复制
+  pathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return '';
+    }
+  },
   listRuns: (key) => invoke('runs:list', key),
   usageSummary: (days) => invoke('runs:summary', days),
   pickDir: () => invoke('dialog:pickDir'),

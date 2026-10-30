@@ -1,6 +1,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, screen } = require('electron');
 
 /**
@@ -66,6 +67,7 @@ const terminal = require('./pty');
 const netCfg = require('./net');
 const platform = require('./platform');
 const { Room, findMentions } = require('./room');
+const files = require('./files');
 const { getTemplate, buildPlan, listForUI } = require('./templates');
 const { buildMarkdown } = require('./export');
 const runlog = require('./runlog');
@@ -375,21 +377,76 @@ const room = new Room({
   },
 });
 
+/** 消息里还引用着的附件路径：裁剪会话时按它判断哪些附件可以回收 */
+function referencedFiles(messages) {
+  const out = [];
+  for (const m of messages || []) {
+    for (const p of m.parts || []) {
+      if (p && p.type === 'file' && p.path) out.push(p.path);
+    }
+  }
+  return out;
+}
+
+/**
+ * 一个会话可能把附件副本落在哪些工作目录里：群聊是群目录 + 成员目录，
+ * 单 Bot 就是它自己的目录。清空 / 删除时按这个列表收掉 .baton/attachments。
+ */
+function cwdsOf(key) {
+  if (isGroupKey(key)) {
+    const g = state.groups.find((x) => x.id === key);
+    if (!g) return [];
+    const members = (g.memberIds || []).map((id) => state.bots.find((b) => b.id === id)).filter(Boolean);
+    return [g.cwd, ...members.map((b) => b.cwd)].filter(Boolean);
+  }
+  const bot = state.bots.find((b) => b.id === key);
+  return bot && bot.cwd ? [bot.cwd] : [];
+}
+
+/**
+ * 渲染层传来的附件清单只信一半：路径必须在我们自己的附件目录下、文件确实存在。
+ * 返回可直接写进消息 parts 和 prompt 的元数据。
+ */
+function cleanAttachments(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const a of list.slice(0, 20)) {
+    if (!a || typeof a.path !== 'string' || !files.isOwned(a.path)) continue;
+    try {
+      const st = fs.statSync(a.path);
+      if (!st.isFile()) continue;
+      out.push({
+        path: a.path,
+        name: String(a.name || path.basename(a.path)).slice(0, 200),
+        size: st.size,
+        kind: a.kind === 'image' ? 'image' : 'file',
+      });
+    } catch {}
+  }
+  return out;
+}
+
 /**
  * 单 Bot 的一轮：拍快照 → 拉起 CLI → 结束后算改动、记运行日志。
  * 由 chat:send 在把用户消息回给界面之后异步调用：大仓库的 git add -A 要好几秒，
  * 不能挡着「已发送」的反馈（以前发送按钮会像卡住一样）。
  */
-async function runSingle(key, bot, agent, text, startedAt, who) {
+async function runSingle(key, bot, agent, text, startedAt, who, attachments = []) {
+  // 附件按这个 Bot 的实际工作目录准备；CLI 读不到工作目录之外时，prepare 会复制进来
+  const cwd = bot.cwd && fs.existsSync(bot.cwd) ? bot.cwd : os.homedir();
+  const refs = files.resolveRefs(text, cwd);
+  const prep = files.prepare(agent, [...attachments, ...refs], cwd, key);
+  // 只给路径，内容由 CLI 自己按需读；用户消息里保留原文，不改写
+  const prompt = prep.files.length ? `${text}\n\n${files.promptSection(prep.files)}` : text;
   const repo = await git.repoRoot(bot.cwd);
   const before = await git.snapshot(repo);
   // 上一轮还没跑完时 runner 会拒绝，这时别登记新任务，免得顶掉正在跑的那条实时记录
   const task = runner.isRunning(key) ? null : new runlog.Task({ key, kind: 'bot', title: bot.name, userText: text });
-  if (task) task.setRunning(bot.id, { kind: 'bot', ...who, from: '用户', startedAt, prompt: text });
+  if (task) task.setRunning(bot.id, { kind: 'bot', ...who, from: '用户', startedAt, prompt });
 
   let r;
   try {
-    r = await runner.run(bot, agent, text, { key });
+    r = await runner.run(bot, agent, prompt, { key, extraDirs: prep.extraDirs, images: prep.images });
   } catch (e) {
     if (task) task.finish('error');
     throw e;
@@ -436,7 +493,7 @@ async function runSingle(key, bot, agent, text, startedAt, who) {
       usage: meta.tokens || null,
       cost: typeof meta.cost === 'number' ? meta.cost : null,
       model: meta.model || bot.model || '',
-      prompt: text,
+      prompt,
       msgId: msg.id,
       cwd: bot.cwd,
       changes,
@@ -513,9 +570,11 @@ function registerIpc() {
   });
   ipcMain.handle('bots:delete', (_e, id) => {
     runner.stop(id);
+    const gone = state.bots.find((b) => b.id === id);
     state.bots = state.bots.filter((b) => b.id !== id);
     store.deleteChat(id);
     runlog.remove(id);
+    files.clear(id, gone && gone.cwd ? [gone.cwd] : []);
     for (const g of state.groups) {
       if ((g.memberIds || []).includes(id)) {
         g.memberIds = g.memberIds.filter((x) => x !== id);
@@ -578,14 +637,21 @@ function registerIpc() {
   });
   ipcMain.handle('groups:delete', (_e, id) => {
     room.stop(id);
+    const cwds = cwdsOf(id);
     state.groups = state.groups.filter((g) => g.id !== id);
     store.deleteChat(id);
     runlog.remove(id);
+    files.clear(id, cwds);
     persist();
     return true;
   });
 
-  ipcMain.handle('chat:get', (_e, botId) => store.getMessages(botId));
+  ipcMain.handle('chat:get', (_e, botId) => {
+    const messages = store.getMessages(botId);
+    // 打开会话时顺手回收没人引用的附件文件（消息被裁掉、发送前崩溃都会留下）
+    files.prune(botId, referencedFiles(messages));
+    return messages;
+  });
   ipcMain.handle('runs:list', (_e, key) => ({ live: runlog.liveOf(key), tasks: runlog.list(key) }));
   ipcMain.handle('runs:summary', (_e, days) => runlog.summary(Number(days) || 0));
   ipcMain.handle('chat:export', async (_e, key) => {
@@ -639,6 +705,7 @@ function registerIpc() {
     room.stop(key);
     runner.stop(key);
     store.clearMessages(key);
+    files.clear(key, cwdsOf(key));
     if (isGroupKey(key)) {
       const g = state.groups.find((x) => x.id === key);
       if (g) {
@@ -662,35 +729,37 @@ function registerIpc() {
     if (isGroupKey(key)) {
       const group = state.groups.find((g) => g.id === key);
       if (!group) return { ok: false, error: L('群聊不存在', 'Room not found') };
+      const atts = cleanAttachments(payload.attachments);
       const userMsg = {
         id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         role: 'user',
-        parts: [{ type: 'text', text }],
+        parts: [{ type: 'text', text }, ...atts.map((a) => ({ type: 'file', ...a }))],
         status: 'done',
         createdAt: Date.now(),
         mentions: findMentions(text, group.memberIds.map((id) => state.bots.find((b) => b.id === id)).filter(Boolean)),
       };
       store.appendMessage(key, userMsg);
       group.updatedAt = Date.now();
-      group.preview = text.slice(0, 60);
+      group.preview = (text || atts.map((a) => a.name).join(' ')).slice(0, 60);
       persist();
-      room.send(group, text, userMsg).catch((e) => room.pushSystem(key, L(`编排出错：${e.message}`, `Orchestration error: ${e.message}`)));
+      room.send(group, text, userMsg, atts).catch((e) => room.pushSystem(key, L(`编排出错：${e.message}`, `Orchestration error: ${e.message}`)));
       return { ok: true, userMsg, group: true };
     }
 
     const bot = state.bots.find((b) => b.id === key);
     if (!bot) return { ok: false, error: L('Bot 不存在', 'Bot not found') };
     const agent = getAgent(bot.agentId);
+    const atts = cleanAttachments(payload.attachments);
     const userMsg = {
       id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       role: 'user',
-      parts: [{ type: 'text', text }],
+      parts: [{ type: 'text', text }, ...atts.map((a) => ({ type: 'file', ...a }))],
       status: 'done',
       createdAt: Date.now(),
     };
     store.appendMessage(key, userMsg);
     bot.updatedAt = Date.now();
-    bot.preview = text.slice(0, 60);
+    bot.preview = (text || atts.map((a) => a.name).join(' ')).slice(0, 60);
     persist();
 
     // 单 Bot 也记运行日志：一问一答就是一次任务，顺带记下这一轮改了哪些文件。
@@ -712,7 +781,7 @@ function registerIpc() {
       return { ok: false, error, userMsg, errMsg };
     }
     startingChats.add(key);
-    runSingle(key, bot, agent, text, startedAt, who)
+    runSingle(key, bot, agent, text, startedAt, who, atts)
       .catch((e) => logFatal('chat:send', e))
       .finally(() => startingChats.delete(key));
     return { ok: true, userMsg };
@@ -722,6 +791,28 @@ function registerIpc() {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
   });
+
+  /* ---------- 附件 / @ 文件 ---------- */
+  // 文件索引只用于输入框的 @ 补全：给相对路径，按当前工作目录列
+  ipcMain.handle('files:list', (_e, { cwd, q } = {}) => files.listFiles(cwd, q));
+  ipcMain.handle('attach:pick', async (_e, key) => {
+    const r = await dialog.showOpenDialog(win, {
+      title: L('添加附件', 'Add attachments'),
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true, attachments: [] };
+    // 复制进会话自己的附件目录，原文件不动
+    return { ok: true, ...files.attachPaths(key, r.filePaths.slice(0, 20)) };
+  });
+  // 拖拽：路径由渲染层通过 webUtils 取，主进程负责复制
+  ipcMain.handle('attach:add', (_e, { key, paths } = {}) => ({ ok: true, ...files.attachPaths(key, paths) }));
+  // 粘贴图片：渲染层把字节传过来
+  ipcMain.handle('attach:save', (_e, { key, items } = {}) => ({ ok: true, ...files.attachBuffers(key, items) }));
+  ipcMain.handle('attach:open', (_e, p) => {
+    if (files.isOwned(p) && fs.existsSync(p)) shell.showItemInFolder(p);
+    return true;
+  });
+  ipcMain.handle('attach:discard', (_e, paths) => files.discard(paths));
 
   ipcMain.handle('shell:open', (_e, url) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
@@ -888,6 +979,8 @@ app.whenReady().then(() => {
   migrateLegacyData();
   // 整个进程只从磁盘读这一次；之后 state 是唯一事实来源（见 app:init 的说明）
   state = store.loadState();
+  // 顺手清掉已经没有对应会话的附件目录，别让它无限长
+  files.sweep([...state.bots.map((b) => b.id), ...state.groups.map((g) => g.id)]);
   // 外观设置要在建窗口前生效：窗口底色、标题栏都跟它走（默认跟随系统）
   const bootSettings = state.settings || {};
   nativeTheme.themeSource = bootSettings.theme || 'system';

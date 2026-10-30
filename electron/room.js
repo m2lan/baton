@@ -17,6 +17,7 @@ const { buildEnv } = require('./runner');
 const { stripAnsi } = require('./parsers');
 const { Task } = require('./runlog');
 const git = require('./git');
+const files = require('./files');
 const { L } = require('./lang');
 
 const isWin = process.platform === 'win32';
@@ -154,9 +155,11 @@ class Room {
    * 这里再做两件事：① 把它作为「补充要求」显式塞进下一次 prompt；
    * ② 如果队列已经空了，补一个负责人接手，别让这条补充晾着没人管。
    */
-  interject(group, text) {
+  interject(group, text, attachments = []) {
     const live = this.live.get(group.id);
     if (!live) return { ok: false, error: L('这个群正在跑上一轮', 'This room is still running the previous turn') };
+    // 插话带的附件也要让后面的 Bot 看到
+    if (attachments.length) live.attachments.push(...attachments);
     if (live.queue.length) {
       // 后面还排着人：挂到下一棒的「执行中补充」里，由 runJob 消费
       live.notes.push(text);
@@ -314,6 +317,7 @@ class Room {
     if (job.worktree) {
       chunks.push('【隔离目录】你这次在一个独立的 git worktree 里工作，和其他成员并行。只改和你任务相关的文件；跑完后改动会自动合回主目录。');
     }
+    if (job.attachFiles && job.attachFiles.length) chunks.push(files.promptSection(job.attachFiles));
 
     chunks.push(`【本轮任务】\n${job.text}`);
     chunks.push('如果这件事需要别的成员接手，在回答最后单独一行写 `@成员名` 交班；不需要就不要 @ 任何人。');
@@ -416,6 +420,11 @@ class Room {
 
     const wt = job.worktree;
     const cwd = wt ? wt.cwd : group.cwd || bot.cwd;
+    // 附件跟着整轮走：拖进来的文件 + 正文里 @ 的路径，按这个 Bot 实际的 cwd 解析，
+    // 在 worktree 里也能指到同一份文件。prepare 会按 CLI 的能力决定放哪里。
+    const refTokens = [...(live.refTokens || []), ...files.parseRefs(jobText, members.map((m) => m.name))];
+    const attach = [...(live.attachments || []), ...files.resolveTokens(refTokens, cwd)];
+    const prep = files.prepare(agent, attach, cwd, group.id);
     const target = {
       id: bot.id,
       cwd,
@@ -423,10 +432,12 @@ class Room {
       permission: bot.permission,
       systemPrompt: bot.systemPrompt,
       env: bot.env,
+      extraDirs: prep.extraDirs,
+      images: prep.images,
       // worktree 换了目录，原来的 session 在这里 resume 不了，开新会话
       sessionId: wt ? '' : (group.sessions && group.sessions[bot.id]) || '',
     };
-    const prompt = this.buildPrompt(group, bot, { ...job, text: jobText }, members);
+    const prompt = this.buildPrompt(group, bot, { ...job, text: jobText, attachFiles: prep.files }, members);
 
     // 跑之前给工作区拍个快照，跑完再拍一次，就知道这一棒改了什么
     const root = wt ? wt.dir : await git.repoRoot(cwd);
@@ -698,13 +709,13 @@ class Room {
     return 'retry';
   }
 
-  async send(group, userText, userMsg) {
+  async send(group, userText, userMsg, attachments = []) {
     const members = this.members(group);
     if (!members.length) {
       this.pushSystem(group.id, L('这个群还没有成员，先在群设置里加几个 Bot。', 'This room has no members yet — add some Bots in room settings.'));
       return { ok: false, error: L('群聊没有成员', 'The room has no members') };
     }
-    if (this.busy.has(group.id)) return this.interject(group, userText);
+    if (this.busy.has(group.id)) return this.interject(group, userText, attachments);
 
     this.busy.add(group.id);
 
@@ -717,7 +728,10 @@ class Room {
     let endReason = 'done';
     const lastText = new Map(); // botId -> 上一轮的正文，用于识别原地打转
     const task = new Task({ key: group.id, kind: 'group', title: group.name, userText });
-    const live = { queue, notes: [], current: null, currentList: [], turn: 0, task };
+    const live = { queue, notes: [], current: null, currentList: [], turn: 0, task, attachments: [], refTokens: [] };
+    // 附件跟着整轮走：交班给下一个 Bot 时也能读到；路径按每个 Bot 实际的 cwd 解析
+    live.attachments = (attachments || []).filter(Boolean);
+    live.refTokens = files.parseRefs(userText, members.map((m) => m.name));
     this.live.set(group.id, live);
     // 这一轮的身份（见 isCurrent）：被 stop 或被新一轮顶掉后，旧循环靠它收尾
     const isCurrent = () => this.isCurrent(group.id, live);

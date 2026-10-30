@@ -607,6 +607,78 @@ input, textarea, select { font: inherit; color: inherit; }
 .square { width: 9px; height: 9px; background: #fff; border-radius: 2px; }
 .composer-hint { max-width: 800px; margin: 7px auto 0; text-align: center; font-size: 10.5px; color: var(--k-4b5361); }
 
+/* 附件：输入框里的待发清单、消息里的已发清单 */
+.attach-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 2px 8px; }
+.attach-chip {
+  display: flex; align-items: center; gap: 6px; max-width: 280px;
+  padding: 3px 6px; border-radius: 8px;
+  background: var(--k-0d1016); border: 1px solid var(--line);
+  font-size: 11px; color: var(--sub); cursor: pointer;
+}
+.attach-chip:hover { border-color: var(--line-2); color: var(--text); }
+.attach-thumb { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; }
+.attach-ico { font-size: 13px; line-height: 1; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.attach-size { color: var(--mute); font-size: 10px; }
+.attach-x {
+  width: 16px; height: 16px; border-radius: 4px; color: var(--mute);
+  font-size: 13px; line-height: 1; display: grid; place-items: center;
+}
+.attach-x:hover { color: var(--err); background: var(--k-1a1f28); }
+.attach-btn {
+  width: 28px; height: 28px; flex: 0 0 28px; border-radius: 8px;
+  display: grid; place-items: center; font-size: 13px;
+  color: var(--sub); border: 1px solid var(--line); background: var(--k-0d1016);
+}
+.attach-btn:hover { color: var(--text); border-color: var(--line-2); }
+.attach-btn:disabled { opacity: .5; cursor: progress; }
+.attach-err { font-size: 11px; color: var(--err); padding: 0 2px 6px; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 5px; }
+.msg-file {
+  display: flex; align-items: center; gap: 6px; max-width: 300px;
+  padding: 4px 8px; border-radius: 8px; cursor: pointer;
+  background: var(--k-0d1016); border: 1px solid var(--line);
+  font-size: 11px; color: var(--sub);
+}
+.msg-file:hover { border-color: var(--line-2); color: var(--text); }
+.msg-thumb { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; }
+.msg-file-ico { font-size: 14px; }
+.msg-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+.msg-file-size { color: var(--mute); font-size: 10px; }
+.mention-item.file .mi-name { font-family: var(--mono); font-size: 11.5px; }
+
+/* 拖拽提示：铺满窗口，但不吃指针事件，松手仍然落到 window 上 */
+.drop-veil {
+  position: fixed; inset: 0; z-index: 60; pointer-events: none;
+  display: grid; place-items: center;
+  background: rgba(var(--lo-rgb), .55); backdrop-filter: blur(3px);
+}
+.drop-box {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 26px 40px; border-radius: 16px;
+  border: 2px dashed var(--accent); background: var(--panel);
+  box-shadow: 0 24px 60px rgba(var(--lo-rgb), .6);
+}
+.drop-ico { font-size: 28px; line-height: 1; }
+.drop-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.drop-sub { font-size: 12px; color: var(--mute); }
+
+/* 图片预览 */
+.lightbox {
+  position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column;
+  background: rgba(var(--lo-rgb), .88); backdrop-filter: blur(6px);
+}
+.lightbox-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; color: var(--text);
+}
+.lightbox-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lightbox-actions { display: flex; align-items: center; gap: 8px; }
+.lightbox-img {
+  flex: 1; min-height: 0; width: 100%; object-fit: contain;
+  padding: 0 16px 16px;
+}
+
 /* 群聊进度条：谁在跑、谁在排队 */
 .queue-bar {
   max-width: 800px; margin: 0 auto 7px;

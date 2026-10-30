@@ -101,6 +101,7 @@ build/
 scripts/
   dist.js         打包入口（平台/架构校验 + 镜像 + 自检）
   test-runner.js  命令行验证某个 CLI 适配器是否跑通
+  test-*.js       无界面回归测试（附件 / 群聊编排 / 运行记录），npm test 一把跑完
   make-icon.js    重新生成应用图标
 .github/workflows/
   build.yml       三平台 CI：各自在自己系统上出包
@@ -333,6 +334,15 @@ codebuddy 系 CLI 有个「稳定的本地守护端口」（默认 `61172`），
 
 模板定义在 `electron/templates.js`，加一个模板就是往数组里追加一项。
 
+## 文件与附件
+
+给 Bot 看文件不用把内容拼进 prompt——它们本来就是 agent，自己会读：
+
+- **@ 文件**：输入框里打 `@`，同时列出群成员和当前工作目录下的文件（git 仓库按 `git ls-files`，自动尊重 `.gitignore`）。选中后插入相对路径，发送时按这个 Bot 实际的工作目录解析成绝对路径，写进 prompt 的【附件】段。
+- **附件**：点输入框右下角的 📎、把文件拖进窗口，或者直接粘贴截图。文件复制进会话自己的附件目录，原文件不动；消息里保留文件名和大小，点一下打开预览（图片）或在文件夹中显示。单个文件上限 100MB，一次最多 20 个，重复拖同一个文件只会留一份。
+
+不同 CLI 读附件的方式不同：Claude Code / CodeBuddy / Codex 用 `--add-dir`、Gemini 用 `--include-directories` 直接读附件目录；其余 CLI 会把附件复制到工作目录下的 `.baton/attachments/`，并自动写进 `.git/info/exclude`（不改你的 `.gitignore`）。图片走原生输入：Codex 用 `-i`，Claude Code / CodeBuddy 用 stream-json 图片块；其他 CLI 由模型按路径自己读。
+
 ## 运行记录与用量
 
 会话右上角的「运行记录」会列出每一次任务。一次任务从你发出一句话开始，到这句话引发的整条交班链结束为止：
@@ -386,6 +396,9 @@ node scripts/bench-detect.js
 # 单独验证某个 CLI 适配器（不开界面）
 node scripts/test-runner.js claude "用一句话介绍自己"
 node scripts/test-runner.js codex  "回复 ok"
+
+# 无界面回归测试：附件、群聊编排、运行记录
+npm test
 ```
 
 - **提示未登录**：点消息里的"在窗口内登录"，底部会拉起该 CLI 的交互式终端（claude 系会给出"输入 /login"按钮），授权完成后关掉面板、把消息重发一次即可。

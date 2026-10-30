@@ -3,6 +3,8 @@
  * CLI 目录 + 调用协议定义
  * 每个 agent 描述：怎么检测、怎么装、怎么用一个 prompt 调起来、输出是什么协议
  */
+const fs = require('fs');
+const path = require('path');
 
 const CATALOG = [
   {
@@ -273,14 +275,44 @@ function permissionArgs(agent, permission) {
   }
 }
 
+const IMAGE_MEDIA = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+// base64 之后还会再大三分之一；Claude 的图片上限是 5MB，这里留足余量，
+// 更大的图片退回「只给路径」，让模型用 Read 工具读
+const MAX_INLINE_IMAGE = 3 * 1024 * 1024;
+
+/** 图片文件 → Claude / CodeBuddy 的 stream-json 图片块；不支持的格式返回 null */
+function imageBlock(file) {
+  const media = IMAGE_MEDIA[path.extname(String(file || '')).toLowerCase()];
+  if (!media) return null;
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > MAX_INLINE_IMAGE) return null;
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: media, data: fs.readFileSync(file).toString('base64') },
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 构造一次调用的命令行
  * @returns {{file:string, args:string[], stdin?:string, proto:string}}
  */
 function buildInvocation(agent, opts) {
-  const { prompt, sessionId, model, permission, systemPrompt, resume } = opts;
+  const { prompt, sessionId, model, permission, systemPrompt, resume, extraDirs, images } = opts;
   const full = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
   const useResume = !!(resume && sessionId);
+  // 附件目录：读得到工作目录之外文件的 CLI 才需要，其余 CLI 的附件已被复制进 cwd
+  const dirs = (extraDirs || []).filter(Boolean);
+  const imgs = (images || []).filter(Boolean);
 
   if (agent.proto === 'claude') {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
@@ -288,12 +320,24 @@ function buildInvocation(agent, opts) {
     if (model) args.push('--model', model);
     if (useResume) args.push('--resume', sessionId);
     else if (sessionId) args.push('--session-id', sessionId);
+    for (const d of dirs) args.push('--add-dir', d);
+    // 有图片时改走 stream-json 输入，把图片作为 content block 直接发过去；
+    // 没有图片仍用纯文本 stdin，少一层协议，行为完全不变。
+    const blocks = imgs.map(imageBlock).filter(Boolean);
+    if (blocks.length) {
+      args.push('--input-format', 'stream-json');
+      const input = { type: 'user', message: { role: 'user', content: [{ type: 'text', text: full }, ...blocks] } };
+      return { file: agent.bin, args, stdin: `${JSON.stringify(input)}\n`, proto: 'claude' };
+    }
     return { file: agent.bin, args, stdin: full, proto: 'claude' };
   }
 
   if (agent.proto === 'codex') {
     const args = ['exec', '--json', '--skip-git-repo-check', ...permissionArgs(agent, permission)];
     if (model) args.push('--model', model);
+    for (const d of dirs) args.push('--add-dir', d);
+    // codex 有原生图片入口，比让模型自己去读更稳
+    for (const p of imgs) args.push('-i', p);
     if (useResume) return { file: agent.bin, args: [...args, 'resume', sessionId, '-'], stdin: full, proto: 'codex' };
     return { file: agent.bin, args: [...args, '-'], stdin: full, proto: 'codex' };
   }
@@ -301,6 +345,7 @@ function buildInvocation(agent, opts) {
   if (agent.proto === 'gemini') {
     const args = ['--output-format', 'stream-json', ...permissionArgs(agent, permission)];
     if (model) args.push('-m', model);
+    if (dirs.length) args.push('--include-directories', dirs.join(','));
     if (useResume) args.push('--resume', sessionId);
     else if (sessionId) args.push('--session-id', sessionId);
     if (agent.stdinPrompt) return { file: agent.bin, args, stdin: full, proto: 'gemini' };

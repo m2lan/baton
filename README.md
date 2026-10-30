@@ -149,6 +149,15 @@ Each role ships with a system prompt that states what it owns, what it does not 
 
 Templates live in `electron/templates.js`; adding one is just another entry in the array.
 
+## Files and attachments
+
+Baton never stuffs file contents into the prompt — these CLIs are agents and can read files themselves:
+
+- **@ files**: type `@` in the composer to list both room members and files under the current working directory (`git ls-files` in a repo, so `.gitignore` is respected). Picking a file inserts its relative path; at send time it is resolved against that Bot's actual working directory and added to the prompt as an attachments section.
+- **Attachments**: click 📎, drag files onto the window, or paste a screenshot. Files are copied into the conversation's own attachment folder (originals untouched); the message keeps the name and size, and clicking it previews images or reveals other files in the file manager. Up to 100MB per file and 20 files at a time, and dropping the same file twice keeps a single copy.
+
+How a CLI reads them depends on what it supports: Claude Code / CodeBuddy / Codex get `--add-dir`, Gemini gets `--include-directories`, and other CLIs get a copy under `.baton/attachments/` in the working directory (added to `.git/info/exclude`, not your `.gitignore`). Images go in natively: Codex takes `-i`, Claude Code / CodeBuddy take stream-json image blocks, and every other CLI reads them by path.
+
 ## Runs and usage
 
 The **Runs** button in the conversation header opens a record of every task. A task starts when you send a message and ends when the handoff chain it set off finishes:
@@ -205,7 +214,7 @@ renderer/
   app.js        state, event wiring, markdown rendering
   style.css     dark theme
 build/          icon + macOS entitlements
-scripts/        dist.js (packaging), test-runner.js, make-icon.js, bench-detect.js
+scripts/        dist.js (packaging), test-*.js (headless tests), make-icon.js, bench-detect.js
 .github/        three-platform CI
 ```
 
@@ -341,6 +350,9 @@ node scripts/test-runner.js codex  "reply ok"
 
 # measure CLI detection time
 node scripts/bench-detect.js
+
+# headless regression tests (attachments, room orchestration, run log)
+npm test
 ```
 
 - **"Not logged in"** — click *Login in window* on the message. A terminal opens at the bottom; for claude-family CLIs there is an *Input /login* button. Finish auth, close the panel, resend.
