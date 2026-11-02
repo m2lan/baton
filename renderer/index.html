@@ -129,6 +129,12 @@
       </div>
     </header>
 
+    <div v-if="active && interrupted[active.id]" class="resume-bar">
+      <span class="resume-bar-text">{{ active.kind==='group' ? t('runs.interruptedShort') : t('runs.interruptedBotShort') }}</span>
+      <button v-if="active.kind==='group'" class="ghost-btn" @click="resumeActive">{{ t('runs.resume') }}</button>
+      <button class="ghost-btn" @click="discardActive">{{ t('runs.discard') }}</button>
+    </div>
+
     <section class="stream" ref="stream" @scroll="onScroll">
       <!-- 空态 -->
       <div v-if="!active" class="hero">
@@ -800,6 +806,13 @@
               <span class="rt-stat">{{fmtTokens(sumTok(tk.totals.usage))}} tok</span>
               <span class="rt-stat">{{fmtCost(tk.totals.cost)}}</span>
               <span class="rt-end" :class="'end-'+tk.endReason">{{endLabel(tk.endReason)}}</span>
+            </div>
+            <div v-if="tk.status==='interrupted'" class="rt-resume">
+              <span class="rt-resume-text">{{ t('runs.interrupted') }}</span>
+              <template v-if="canResume(tk)">
+                <button class="ghost-btn" @click.stop="resumeTask(tk)">{{ t('runs.resume') }}</button>
+                <button class="ghost-btn" @click.stop="discardTask(tk)">{{ t('runs.discard') }}</button>
+              </template>
             </div>
             <div v-if="runsView.openTask===tk.id" class="rt-body">
               <div class="relay">

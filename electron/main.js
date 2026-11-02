@@ -66,7 +66,7 @@ const { Detector } = require('./detect');
 const terminal = require('./pty');
 const netCfg = require('./net');
 const platform = require('./platform');
-const { Room, findMentions } = require('./room');
+const { Room, findMentions, buildResumeText } = require('./room');
 const files = require('./files');
 const { getTemplate, buildPlan, listForUI } = require('./templates');
 const { buildMarkdown } = require('./export');
@@ -505,6 +505,7 @@ async function runSingle(key, bot, agent, text, startedAt, who, attachments = []
   }
 }
 
+
 /* ---------------- IPC ---------------- */
 function registerIpc() {
   ipcMain.handle('app:init', () => {
@@ -654,6 +655,40 @@ function registerIpc() {
   });
   ipcMain.handle('runs:list', (_e, key) => ({ live: runlog.liveOf(key), tasks: runlog.list(key) }));
   ipcMain.handle('runs:summary', (_e, days) => runlog.summary(Number(days) || 0));
+  ipcMain.handle('runs:resume', async (_e, key, taskId) => {
+    const task = runlog.list(key).find((t) => t.id === taskId && t.status === 'interrupted');
+    if (!task) return { ok: false, error: L('这条任务不需要继续', 'This task does not need resuming') };
+    if (!task.round) return { ok: false, error: L('这条任务已经继续过了', 'This task has already been resumed') };
+    if (!isGroupKey(key)) return { ok: false, error: L('单 Bot 会话直接重发一次即可', 'For a single Bot, just send the message again') };
+    const group = state.groups.find((g) => g.id === key);
+    if (!group) return { ok: false, error: L('群聊不存在', 'Room not found') };
+    if (room.isBusy(key)) return { ok: false, error: L('这个群正在跑，先等它结束', 'This room is still running') };
+
+    const jobs = ((task.round && task.round.queue) || []).filter((j) => j && group.memberIds.includes(j.botId));
+    const names = jobs.map((j) => (state.bots.find((b) => b.id === j.botId) || {}).name).filter(Boolean);
+    const text = buildResumeText(task, names);
+    // 界面显示简短一句，模型收到完整的现场说明（text 只作为本轮任务）
+    const shown = `继续上次中断的任务${task.userText ? `：${task.userText}` : ''}`.slice(0, 200);
+    const userMsg = {
+      id: `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      role: 'user',
+      parts: [{ type: 'text', text: shown }],
+      status: 'done',
+      createdAt: Date.now(),
+    };
+    store.appendMessage(key, userMsg);
+    emit('msg:update', { key, msg: userMsg });
+    group.updatedAt = Date.now();
+    group.preview = shown.slice(0, 60);
+    persist();
+    // 先清掉可继续标记，用户连点两次也不会重复起一轮
+    runlog.discardResume(key, taskId);
+    room
+      .send(group, text, userMsg, [])
+      .catch((e) => room.pushSystem(key, L(`编排出错：${e.message}`, `Orchestration error: ${e.message}`)));
+    return { ok: true, userMsg };
+  });
+  ipcMain.handle('runs:discard', (_e, key, taskId) => runlog.discardResume(key, taskId));
   ipcMain.handle('chat:export', async (_e, key) => {
     const messages = store.getMessages(key) || [];
     if (!messages.length) return { ok: false, error: L('这个会话还没有内容', 'This conversation is empty') };
@@ -979,6 +1014,12 @@ app.whenReady().then(() => {
   migrateLegacyData();
   // 整个进程只从磁盘读这一次；之后 state 是唯一事实来源（见 app:init 的说明）
   state = store.loadState();
+  // 上次没跑完的任务归档成 interrupted：界面打开会话时能看到「上次中断」，由用户决定是否继续
+  try {
+    runlog.recoverAll();
+  } catch (e) {
+    logFatal('recoverAll', e);
+  }
   // 顺手清掉已经没有对应会话的附件目录，别让它无限长
   files.sweep([...state.bots.map((b) => b.id), ...state.groups.map((g) => g.id)]);
   // 外观设置要在建窗口前生效：窗口底色、标题栏都跟它走（默认跟随系统）
@@ -1009,7 +1050,30 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  for (const botId of runner.running.keys()) runner.stop(botId);
   terminal.closeAll();
+  // 统一走 before-quit：那里负责把进行中的任务和半截输出落盘
   app.quit();
+});
+
+let quitting = false;
+
+/**
+ * 退出前收尾：drain 保住正在流式输出的半截消息，interruptAll 把任务标成 interrupted。
+ * 两者都是同步写盘，清理完直接退出即可；5 秒兜底防止某个子进程卡住整条链。
+ */
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  quitting = true;
+  event.preventDefault();
+  const timer = setTimeout(() => app.exit(0), 5000);
+  if (timer.unref) timer.unref();
+  try {
+    runner.drain('hostExit');
+    runlog.interruptAll('hostExit');
+    terminal.closeAll();
+  } catch (e) {
+    logFatal('before-quit', e);
+  }
+  clearTimeout(timer);
+  app.exit(0);
 });

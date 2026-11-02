@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('lb', {
   },
   listRuns: (key) => invoke('runs:list', key),
   usageSummary: (days) => invoke('runs:summary', days),
+  resumeRun: (key, taskId) => invoke('runs:resume', key, taskId),
+  discardRun: (key, taskId) => invoke('runs:discard', key, taskId),
   pickDir: () => invoke('dialog:pickDir'),
   openExternal: (url) => invoke('shell:open', url),
   openFolder: (dir) => invoke('shell:openFolder', dir),

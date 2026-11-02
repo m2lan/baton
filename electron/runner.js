@@ -275,6 +275,35 @@ class Runner {
   }
 
   /**
+   * 应用退出前的收尾：把还在跑的每一跳结算成 interrupted 并落盘。
+   * 不走 finish()：编排层此时已经在退出，只要保证半截输出不丢。
+   */
+  drain(reason = 'hostExit') {
+    const keys = [...this.running.keys()];
+    for (const key of keys) {
+      const ctx = this.running.get(key);
+      if (!ctx) continue;
+      const msg = ctx.msg;
+      if (msg.status === 'streaming') msg.status = 'interrupted';
+      msg.finishedAt = Date.now();
+      msg.duration = msg.finishedAt - msg.createdAt;
+      msg.meta = { ...(msg.meta || {}), interrupted: true, interruptedReason: reason };
+      if (!msg.parts.length) {
+        msg.parts.push({ type: 'text', text: L('（任务因 Baton 退出而中断）', '(interrupted by Baton exiting)') });
+      }
+      ctx.finished = true;
+      this.running.delete(key);
+      try {
+        this.onMessage(key, msg);
+      } catch {}
+      try {
+        killTree(ctx.child);
+      } catch {}
+    }
+    return keys.length;
+  }
+
+  /**
    * 进程已被杀，但 close 迟迟不来（孙进程占着 stdio）时强制结算。
    * 否则 ctx.done 永远不 resolve，群聊这一轮会一直停在 busy。
    */

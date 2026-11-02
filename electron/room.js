@@ -899,7 +899,17 @@ class Room {
     const queued = (p.queue || [])
       .map((j) => brief(this.getBot(j.botId)))
       .filter(Boolean);
-    if (live && live.task && p.active !== false) live.task.setQueue(queued);
+    if (live && live.task && p.active !== false) {
+      // 轮次快照跟着状态走：进程被强杀后，靠它知道跑到第几棒、还剩谁没跑
+      const round = {
+        turn: p.turn || live.turn || 0,
+        notes: live.notes || [],
+        verifyAttempts: live.verifyAttempts || 0,
+        currentBotId: (list[0] || {}).id || '',
+      };
+      if (JSON.stringify(round) !== JSON.stringify(live.task.round)) live.task.setRound(round);
+      live.task.setQueue(queued, p.queue);
+    }
     this.emit('room:state', {
       key: group.id,
       active: p.active !== undefined ? !!p.active : list.length > 0,
@@ -926,4 +936,27 @@ class Room {
   }
 }
 
-module.exports = { Room, findMentions, textOf, similarity };
+/**
+ * 中断任务的恢复说明。不重放已经跑完的跳，只把现场和剩余交接讲清楚，
+ * 让接手的 Bot 先核对文件状态 —— 假装断点续跑比重新开始更危险。
+ * @param task 已归档的 interrupted 任务（runlog 里的结构）
+ * @param names 还需要接手的成员名，按原队列顺序
+ */
+function buildResumeText(task, names) {
+  const done = [...new Set((task.hops || []).filter((h) => h.kind === 'bot').map((h) => h.botName).filter(Boolean))];
+  const lines = [
+    '【继续上次中断的任务】',
+    '上一轮因 Baton 退出而中断。先检查当前的文件状态（git status、相关文件）和会话记录，不要假设没跑完的步骤已经做完。',
+  ];
+  if (task.userText) lines.push(`原始需求：${task.userText}`);
+  if (done.length) lines.push(`已经跑过的成员：${done.join('、')}（它们的工作可能只完成了一部分）`);
+  if (names.length) {
+    lines.push(`还需要接手：${names.join('、')}`);
+    lines.push(`请 ${names.map((n) => '@' + n).join(' ')} 继续。`);
+  } else {
+    lines.push('没有剩余的交班，请负责人核对现场后收尾；需要别人配合再 @ 对方。');
+  }
+  return lines.join('\n');
+}
+
+module.exports = { Room, findMentions, textOf, similarity, buildResumeText };

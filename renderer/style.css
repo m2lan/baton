@@ -407,6 +407,15 @@ input, textarea, select { font: inherit; color: inherit; }
 .head-sub .path:hover { color: var(--sub); text-decoration: underline dotted; }
 .head-sub .sep { opacity: .5; }
 .head-actions { display: flex; gap: 6px; }
+
+/* 上次任务中断的常驻提示：不打开 Runs 也能看到并处理 */
+.resume-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 6px 18px; border-bottom: 1px solid var(--line);
+  background: var(--k-10141c); font-size: 11.5px; color: var(--warn);
+}
+.resume-bar-text { flex: 1; min-width: 0; }
+.resume-bar .ghost-btn { font-size: 11px; padding: 2px 8px; flex: 0 0 auto; }
 .ghost-btn {
   font-size: 12px; padding: 5px 10px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--k-0d1016); color: var(--sub);
@@ -1059,6 +1068,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .rt-end.end-done, .rt-end.end-passed, .rt-end.end-verifyPassed { color: var(--ok); }
 .rt-end.end-stall, .rt-end.end-timeout, .rt-end.end-maxTurns, .rt-end.end-stopped { color: var(--warn); }
 .rt-end.end-error, .rt-end.end-failed, .rt-end.end-verifyFailed { color: var(--err); }
+.rt-end.end-hostExit { color: var(--warn); }
+.rt-resume { display: flex; align-items: center; gap: 8px; padding: 0 12px 9px; font-size: 11px; color: var(--warn); }
+.rt-resume-text { flex: 1; min-width: 0; line-height: 1.5; }
+.rt-resume .ghost-btn { font-size: 11px; padding: 2px 8px; flex: 0 0 auto; }
 .rt-body { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
 
 .rt-bots { padding: 4px 4px 10px; display: flex; flex-direction: column; gap: 5px; }

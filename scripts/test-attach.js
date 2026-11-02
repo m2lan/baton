@@ -199,14 +199,16 @@ execFileSync('git', ['-C', ws, 'init', '-q']);
 
     const outside = path.join(tmp, 'keep');
     fs.mkdirSync(outside, { recursive: true });
+    const keptFile = path.join(outside, 'keep.txt');
+    fs.writeFileSync(keptFile, 'x');
     files.clear('../keep');
     assert(fs.existsSync(outside), '越界 key 不能删到外面');
 
     // 丢掉未发送的附件：只删附件目录里的文件
     const one = files.attachPaths('chat2', [path.join(ws, 'a.ts')]).attachments[0];
     assert(fs.existsSync(one.path));
-    files.discard('/etc/passwd');
-    assert(fs.existsSync('/etc/passwd'), 'deny 越界路径');
+    files.discard(keptFile);
+    assert(fs.existsSync(keptFile), 'deny 越界路径');
     files.discard([one.path]);
     assert(!fs.existsSync(one.path), 'discard 应删掉附件');
     console.log('✓ 附件清理');
