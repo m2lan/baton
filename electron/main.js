@@ -689,6 +689,7 @@ function registerIpc() {
     return { ok: true, userMsg };
   });
   ipcMain.handle('runs:discard', (_e, key, taskId) => runlog.discardResume(key, taskId));
+  ipcMain.handle('runs:dismiss', (_e, key, taskId) => runlog.dismissAttention(key, taskId));
   ipcMain.handle('chat:export', async (_e, key) => {
     const messages = store.getMessages(key) || [];
     if (!messages.length) return { ok: false, error: L('这个会话还没有内容', 'This conversation is empty') };

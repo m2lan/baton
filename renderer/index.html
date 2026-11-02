@@ -129,10 +129,10 @@
       </div>
     </header>
 
-    <div v-if="active && interrupted[active.id]" class="resume-bar">
-      <span class="resume-bar-text">{{ active.kind==='group' ? t('runs.interruptedShort') : t('runs.interruptedBotShort') }}</span>
-      <button v-if="active.kind==='group'" class="ghost-btn" @click="resumeActive">{{ t('runs.resume') }}</button>
-      <button class="ghost-btn" @click="discardActive">{{ t('runs.discard') }}</button>
+    <div v-if="active && attention[active.id]" class="resume-bar">
+      <span class="resume-bar-text">{{ attentionText(attention[active.id]) }}</span>
+      <button v-if="canResume(attention[active.id])" class="ghost-btn" @click="resumeActive">{{ t('runs.resume') }}</button>
+      <button class="ghost-btn" @click="dismissActive">{{ attention[active.id].status==='interrupted' ? t('runs.discard') : t('runs.gotIt') }}</button>
     </div>
 
     <section class="stream" ref="stream" @scroll="onScroll">

@@ -422,6 +422,17 @@ function discardResume(key, taskId) {
   return true;
 }
 
+/** 用户点「知道了」：不再在会话顶部提醒这条任务，记录本身保留 */
+function dismissAttention(key, taskId) {
+  const list = read(key);
+  const i = list.findIndex((t) => t.id === taskId);
+  if (i < 0 || list[i].attentionDismissed) return false;
+  list[i] = { ...list[i], attentionDismissed: true };
+  write(key, list);
+  emitter('runs:update', { key });
+  return true;
+}
+
 module.exports = {
   Task,
   list,
@@ -433,6 +444,7 @@ module.exports = {
   recoverAll,
   interruptAll,
   discardResume,
+  dismissAttention,
   liveFile,
   readLive,
 };

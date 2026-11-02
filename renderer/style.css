@@ -1068,7 +1068,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .rt-end.end-done, .rt-end.end-passed, .rt-end.end-verifyPassed { color: var(--ok); }
 .rt-end.end-stall, .rt-end.end-timeout, .rt-end.end-maxTurns, .rt-end.end-stopped { color: var(--warn); }
 .rt-end.end-error, .rt-end.end-failed, .rt-end.end-verifyFailed { color: var(--err); }
-.rt-end.end-hostExit { color: var(--warn); }
+.rt-end.end-hostExit, .rt-end.end-blocked { color: var(--warn); }
 .rt-resume { display: flex; align-items: center; gap: 8px; padding: 0 12px 9px; font-size: 11px; color: var(--warn); }
 .rt-resume-text { flex: 1; min-width: 0; line-height: 1.5; }
 .rt-resume .ghost-btn { font-size: 11px; padding: 2px 8px; flex: 0 0 auto; }

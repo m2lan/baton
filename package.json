@@ -1,7 +1,7 @@
 {
   "name": "baton",
   "productName": "Baton",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Turn the AI CLIs already installed on your machine into a team of named Bots.",
   "author": {
@@ -20,12 +20,13 @@
     "dev": "electron . --dev",
     "icon": "electron scripts/make-icon.js",
     "bench": "node scripts/bench-detect.js",
-    "test": "node scripts/test-attach.js && node scripts/test-room.js && node scripts/test-p2.js && node scripts/test-recover.js && node scripts/test-shutdown.js",
+    "test": "node scripts/test-attach.js && node scripts/test-room.js && node scripts/test-p2.js && node scripts/test-recover.js && node scripts/test-shutdown.js && node scripts/test-blocking.js",
     "test:attach": "node scripts/test-attach.js",
     "test:room": "node scripts/test-room.js",
     "test:p2": "node scripts/test-p2.js",
     "test:recover": "node scripts/test-recover.js",
     "test:shutdown": "node scripts/test-shutdown.js",
+    "test:blocking": "node scripts/test-blocking.js",
     "ui:check": "node scripts/cdp-check.js",
     "pack": "node scripts/dist.js --dir",
     "dist": "node scripts/dist.js",

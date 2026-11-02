@@ -207,8 +207,8 @@ createApp({
     });
     // 运行记录弹窗：任务列表 / 用量汇总
     const runsView = reactive({ tab: 'task', key: '', tasks: [], live: null, openTask: '', days: 7, summary: null });
-    // 每个会话最近一条可继续的中断任务：会话顶部提示条直接读它，不必打开 Runs
-    const interrupted = reactive({});
+    // 每个会话最近一条需要人处理的任务：中断待继续，或阻塞等人。会话顶部提示条直接读它
+    const attention = reactive({});
     // 实时：每个会话正在跑的任务快照、每个 Bot 当前这一跳的流式进度、走动的时钟
     const liveTasks = reactive({}); // key -> 快照
     const liveStream = reactive({}); // 'chatKey:botId' -> {chars, tools}
@@ -485,8 +485,8 @@ createApp({
         if (channel === 'run:start') {
           running[chatKeyOf(payload.key)] = true;
           liveStream[streamKeyOf(payload.key)] = { chars: 0, tools: 0 };
-          // 新任务已经开始，旧的中断提示让位
-          delete interrupted[chatKeyOf(payload.key)];
+          // 新任务已经开始，旧的「等你处理」提示让位
+          delete attention[chatKeyOf(payload.key)];
           scrollBottom();
         } else if (channel === 'run:msg') {
           running[chatKeyOf(payload.key)] = true;
@@ -513,7 +513,7 @@ createApp({
           }
         } else if (channel === 'runs:update') {
           if (modal.value === 'runs' && runsView.key === payload.key) loadRuns();
-          if (payload.key && payload.key === activeId.value) loadInterrupted(payload.key);
+          if (payload.key && payload.key === activeId.value) loadAttention(payload.key);
         } else if (channel === 'room:state') {
           roomBusy[payload.key] = !!payload.active;
           if (payload.active) {
@@ -592,7 +592,7 @@ createApp({
       Object.keys(openThink).forEach((k) => delete openThink[k]);
       Object.keys(openTool).forEach((k) => delete openTool[k]);
       if (!chats[id]) chats[id] = await window.lb.getMessages(id);
-      loadInterrupted(id);
+      loadAttention(id);
       scrollBottom(true);
       nextTick(() => ta.value && ta.value.focus());
     }
@@ -904,37 +904,56 @@ createApp({
 
     /* -------- 运行记录 / 用量 -------- */
     /**
-     * 会话顶部提示条的数据：只关心最新一条还没处理的中断任务。
-     * 每个会话一个 JSON，切换会话时顺手取一次，开销可以忽略。
+     * 会话顶部提示条的数据：只看最新一条需要人处理的任务。
+     * 中断任务等用户点继续，阻塞任务等用户补充信息；已点过「知道了」的不再出现。
      */
-    async function loadInterrupted(key) {
+    function attentionOf(tk) {
+      if (!tk) return null;
+      if (tk.status === 'interrupted' && tk.round) return tk;
+      if (tk.endReason === 'blocked' && !tk.attentionDismissed) return tk;
+      return null;
+    }
+
+    async function loadAttention(key) {
       if (!key) return;
       try {
         const r = (await window.lb.listRuns(key)) || {};
-        interrupted[key] = (r.tasks || []).find((t) => t.status === 'interrupted' && t.round) || null;
+        attention[key] = (r.tasks || []).map(attentionOf).find(Boolean) || null;
       } catch {
-        interrupted[key] = null;
+        attention[key] = null;
       }
+    }
+
+    /** 提示条文案：阻塞任务带上原因，中断任务按群聊 / 单 Bot 区分 */
+    function attentionText(tk) {
+      if (!tk) return '';
+      if (tk.endReason === 'blocked') {
+        const reason = (tk.hops || []).flatMap((h) => h.blocked || []).join('；');
+        return reason ? t('runs.blockedBar', { reason }) : t('runs.blockedBarNoReason');
+      }
+      return active.value && active.value.kind === 'group' ? t('runs.interruptedShort') : t('runs.interruptedBotShort');
     }
 
     async function resumeActive() {
       const key = active.value && active.value.id;
-      const task = key && interrupted[key];
-      if (!key || !task) return;
+      const task = key && attention[key];
+      if (!key || !task || task.status !== 'interrupted') return;
       const r = await window.lb.resumeRun(key, task.id);
       if (!r || !r.ok) {
         alert((r && r.error) || t('runs.resumeFailed'));
         return;
       }
-      delete interrupted[key];
+      delete attention[key];
     }
 
-    async function discardActive() {
+    async function dismissActive() {
       const key = active.value && active.value.id;
-      const task = key && interrupted[key];
+      const task = key && attention[key];
       if (!key || !task) return;
-      await window.lb.discardRun(key, task.id);
-      delete interrupted[key];
+      // 中断任务清掉可继续标记，阻塞任务只打「知道了」
+      if (task.status === 'interrupted') await window.lb.discardRun(key, task.id);
+      else await window.lb.dismissRun(key, task.id);
+      delete attention[key];
     }
 
     async function openRuns() {
@@ -983,13 +1002,13 @@ createApp({
         alert((r && r.error) || t('runs.resumeFailed'));
         return;
       }
-      delete interrupted[runsView.key];
+      delete attention[runsView.key];
       modal.value = null;
     }
 
     async function discardTask(tk) {
       await window.lb.discardRun(runsView.key, tk.id);
-      delete interrupted[runsView.key];
+      delete attention[runsView.key];
       await loadRuns();
     }
 
@@ -1628,7 +1647,7 @@ createApp({
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
       t, loc, fromLabel, langPref, langCode, langOptions, setLang, themeOptions, themePref, setTheme,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
-      canResume, resumeTask, discardTask, interrupted, loadInterrupted, resumeActive, discardActive,
+      canResume, resumeTask, discardTask, attention, attentionText, loadAttention, resumeActive, dismissActive,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
       liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub, liveTokens, followTokens,
     };

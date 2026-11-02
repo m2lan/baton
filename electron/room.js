@@ -69,6 +69,23 @@ function extractDecisions(text) {
 }
 
 /**
+ * 抽出结构化标记行，如「【阻塞】需要数据库地址」「【待确认】按 Node 20 继续」。
+ * 允许行首有列表符号；标记后面没写内容时给一句兜底，避免停得莫名其妙。
+ */
+function extractTag(text, tag) {
+  const re = new RegExp(`^[\\s>*\\-]*【${tag}】\\s*(.*)$`);
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const m = line.match(re);
+    if (m) out.push(m[1].trim() || '需要你处理');
+  }
+  return out;
+}
+
+const extractBlocked = (text) => extractTag(text, '阻塞');
+const extractConfirm = (text) => extractTag(text, '待确认');
+
+/**
  * 4-gram Jaccard 相似度，用来识别「同一 Bot 连续两轮说的话几乎一样」。
  * 只关心是否原地打转，不需要精确的语义相似度。
  * 先把数字归一成 #：「第 2 轮」和「第 3 轮」本质是同一句话，
@@ -324,6 +341,14 @@ class Room {
     chunks.push(
       '如果你做出了会影响后续的结论（定了方案、定了技术栈、定了范围、定了取舍），'
         + '在回答最后用单独一行写 `【决策】一句话说明`。没做出新决策就不用写，也不要把过程当决策写。'
+    );
+    chunks.push(
+      '如果必须由用户补充信息、给权限或做决定才能继续，在回答最后单独一行写 `【阻塞】一句话说明`。'
+        + '这时候不要 @ 任何人，Baton 会停下来等用户，不再往下交班。'
+    );
+    chunks.push(
+      '如果你是按照某个假设继续、但希望用户事后确认，在回答最后单独一行写 `【待确认】一句话说明`。'
+        + '这不影响你继续交班。'
     );
 
     return chunks.filter(Boolean).join('\n\n');
@@ -737,12 +762,17 @@ class Room {
     const isCurrent = () => this.isCurrent(group.id, live);
     this.emitState(group, { active: true, queue, turn: 0 }, live);
 
-    // 一个 Bot 跑完之后的共同处理：收集决策、找下一个接手的人
+    // 一个 Bot 跑完之后的共同处理：收集决策、结构化标记，找下一个接手的人
     const settle = (res) => {
       const body = textOf(res.msg);
       const decided = extractDecisions(body);
       if (decided.length) this.mergeDecisions(group, decided);
-      return { body, next: this.pickHandoff(res.msg, group) };
+      const blocked = extractBlocked(body);
+      const confirm = extractConfirm(body);
+      // 原因要留在 hop 里：会话顶部提示条和 Runs 都要能直接展示
+      if (blocked.length) res.hop.blocked = blocked;
+      if (confirm.length) res.hop.confirm = confirm;
+      return { body, next: this.pickHandoff(res.msg, group), blocked, confirm };
     };
 
     try {
@@ -768,11 +798,17 @@ class Room {
             live.currentList = [];
 
             const handoffs = [];
+            const blockedNotes = [];
             for (const res of results) {
               if (!res || !isCurrent()) continue;
               turns++;
-              const { body, next } = settle(res);
+              const { body, next, blocked } = settle(res);
               lastText.set(res.bot.id, body);
+              if (blocked.length) {
+                res.hop.endReason = 'blocked';
+                blockedNotes.push({ name: res.bot.name, reasons: blocked });
+                continue; // 阻塞的成员不参与交班
+              }
               if (next) {
                 res.hop.endReason = 'handoff';
                 res.hop.to = (this.getBot(next) || {}).name || '';
@@ -781,8 +817,21 @@ class Room {
                 handoffs.push({ botId: next, from: res.bot.id, changes: res.changes });
               }
             }
-            // 并发跑完的几个人谁要交班，按顺序排进队列，后面照常串行接力
-            for (const h of handoffs) queue.push({ botId: h.botId, text: userText, from: h.from, fromChanges: h.changes });
+            if (blockedNotes.length) {
+              // 这一批里有人阻塞：后续交班一律不排，整轮停下等人
+              queue.length = 0;
+              endReason = 'blocked';
+              this.pushSystem(
+                group.id,
+                L(
+                  `${blockedNotes.map((b) => b.name).join('、')} 停下来等你处理：${blockedNotes.map((b) => b.reasons.join('；')).join('；')}\n补充信息后直接发一条消息就能继续。`,
+                  `${blockedNotes.map((b) => b.name).join(', ')} is waiting for you: ${blockedNotes.map((b) => b.reasons.join('; ')).join('; ')}\nSend another message once you've provided it.`
+                )
+              );
+            } else {
+              // 并发跑完的几个人谁要交班，按顺序排进队列，后面照常串行接力
+              for (const h of handoffs) queue.push({ botId: h.botId, text: userText, from: h.from, fromChanges: h.changes });
+            }
           }
         } else {
           this.pushSystem(
@@ -836,7 +885,21 @@ class Room {
           }
           lastText.set(bot.id, body);
 
-          const { next } = settle(res);
+          const { next, blocked } = settle(res);
+          if (blocked.length) {
+            res.hop.endReason = 'blocked';
+            endReason = 'blocked';
+            // 阻塞时同一轮里的 @ 不算数：人还没补信息，交给谁都是白跑
+            queue.length = 0;
+            this.pushSystem(
+              group.id,
+              L(
+                `${bot.name} 停下来等你处理：${blocked.join('；')}\n补充信息后直接发一条消息就能继续。`,
+                `${bot.name} is waiting for you: ${blocked.join('; ')}\nSend another message once you've provided it.`
+              )
+            );
+            break;
+          }
           if (next) {
             res.hop.endReason = 'handoff';
             res.hop.to = (this.getBot(next) || {}).name || '';
@@ -850,7 +913,7 @@ class Room {
           endReason = 'stopped';
           break;
         }
-        if (endReason === 'stall') break;
+        if (endReason === 'stall' || endReason === 'blocked') break;
         if (queue.length) {
           endReason = 'maxTurns';
           this.pushSystem(group.id, L(
@@ -869,6 +932,19 @@ class Room {
         break;
       }
     } finally {
+      // 【待确认】不阻断交班，但整轮结束时统一提醒一次，别让假设悄悄溜过去
+      if (isCurrent()) {
+        const confirms = (task.data.hops || []).filter((h) => h.confirm && h.confirm.length);
+        if (confirms.length) {
+          this.pushSystem(
+            group.id,
+            L(
+              `有 ${confirms.length} 个待确认的假设：\n${confirms.map((h) => `- ${h.botName}：${h.confirm.join('；')}`).join('\n')}`,
+              `${confirms.length} assumption(s) need your confirmation:\n${confirms.map((h) => `- ${h.botName}: ${h.confirm.join('; ')}`).join('\n')}`
+            )
+          );
+        }
+      }
       task.finish(endReason);
       // 只有自己还是当前这一轮，才清 busy / live / 界面状态。
       // 否则会把「stop 之后马上又发的那一轮」一起清掉：界面显示空闲、实际还在跑。
@@ -959,4 +1035,4 @@ function buildResumeText(task, names) {
   return lines.join('\n');
 }
 
-module.exports = { Room, findMentions, textOf, similarity, buildResumeText };
+module.exports = { Room, findMentions, textOf, similarity, buildResumeText, extractBlocked, extractConfirm };
