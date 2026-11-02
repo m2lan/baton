@@ -1055,6 +1055,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .runs-tabs .seg { flex: 0 0 auto; }
 .runs-tabs .seg button { padding: 5px 14px; }
 .runs-tabs .seg.days { margin-left: auto; }
+.runs-tabs .seg.runs-filter { margin-left: auto; }
+.seg-count { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; line-height: 15px; }
 .runs-empty { color: var(--mute); font-size: 12px; text-align: center; padding: 40px 10px; line-height: 1.7; }
 
 .run-task { border: 1px solid var(--line); border-radius: 11px; background: var(--k-0c0f15); margin-bottom: 8px; overflow: hidden; }
@@ -1067,7 +1069,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .rt-end { font-size: 10px; padding: 1px 7px; border-radius: 5px; background: var(--k-151a22); color: var(--sub); flex: 0 0 auto; white-space: nowrap; }
 .rt-end.end-done, .rt-end.end-passed, .rt-end.end-verifyPassed { color: var(--ok); }
 .rt-end.end-stall, .rt-end.end-timeout, .rt-end.end-maxTurns, .rt-end.end-stopped { color: var(--warn); }
-.rt-end.end-error, .rt-end.end-failed, .rt-end.end-verifyFailed { color: var(--err); }
+.rt-end.end-error, .rt-end.end-failed, .rt-end.end-verifyFailed, .rt-end.end-mergeFailed { color: var(--err); }
 .rt-end.end-hostExit, .rt-end.end-blocked { color: var(--warn); }
 .rt-resume { display: flex; align-items: center; gap: 8px; padding: 0 12px 9px; font-size: 11px; color: var(--warn); }
 .rt-resume-text { flex: 1; min-width: 0; line-height: 1.5; }

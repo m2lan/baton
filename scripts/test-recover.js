@@ -169,7 +169,26 @@ const livePath = (key) => runlog.liveFile(key);
     assert(!tail.includes('@C'), '没有剩余成员时不该把成员排进队列');
   }
 
+  /* ---- 15. 「需要人处理」判定：默认视图只留这些 ---- */
+  {
+    const { needsAttention } = runlog;
+    assert.strictEqual(needsAttention({ status: 'interrupted', endReason: 'hostExit', round: {} }), true, '可继续的中断要提示');
+    assert.strictEqual(needsAttention({ status: 'interrupted', endReason: 'hostExit', round: null }), false, '放弃继续后不再提示');
+    assert.strictEqual(needsAttention({ status: 'completed', endReason: 'blocked' }), true, '阻塞要提示');
+    assert.strictEqual(needsAttention({ status: 'completed', endReason: 'blocked', attentionDismissed: true }), false, '点过知道了就不再提示');
+    for (const r of ['error', 'failed', 'stall', 'timeout', 'maxTurns', 'verifyFailed']) {
+      assert.strictEqual(needsAttention({ status: 'completed', endReason: r }), true, `${r} 应该需要人处理`);
+    }
+    for (const r of ['done', 'passed', 'verifyPassed', 'stopped', 'handoff']) {
+      assert.strictEqual(needsAttention({ status: 'completed', endReason: r }), false, `${r} 不该进默认视图`);
+    }
+    const t = new runlog.Task({ key: 'c_attention', kind: 'group', title: 'A', userText: 'u' });
+    t.hop({ kind: 'bot', botId: 'A', botName: 'A', endReason: 'error' });
+    t.finish('error');
+    assert.strictEqual(runlog.list('c_attention')[0].needsAttention, true, 'runs:list 要带上判定结果');
+  }
+
   console.log('✓ 任务开始即落盘 / 快照瘦身 / 崩溃归档 / 正常收尾 / 旧一轮迟到不覆盖新一轮');
-  console.log('✓ 放弃继续 / 恢复说明');
+  console.log('✓ 放弃继续 / 恢复说明 / 需要人处理判定');
   console.log('\n全部通过');
 }

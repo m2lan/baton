@@ -138,6 +138,7 @@ class Task {
       status: 'running',
       updatedAt: Date.now(),
       hops: [],
+      worktree: null, // 任务级隔离目录：{root, dir, merged, kept?}
     };
     this.running = new Map(); // id -> 正在跑的这一跳（Bot 或验收）
     this.queue = []; // 给界面看的排队成员（只有名字等展示字段）
@@ -193,6 +194,12 @@ class Task {
   /** 群聊轮次快照：恢复时要靠它知道上一轮跑到第几棒、还剩谁没跑 */
   setRound(round) {
     this.round = round || null;
+    this.saveLive();
+  }
+
+  /** 任务级隔离目录：合并成功后 dir 已被删掉，记录留着方便回溯当时在哪跑的 */
+  setWorktree(info) {
+    this.data.worktree = info || null;
     this.saveLive();
   }
 
@@ -285,11 +292,23 @@ class Task {
   }
 }
 
-/** 会话的任务列表（新的在前），附带每条的合计 */
+const NEEDS_ATTENTION = new Set(['blocked', 'error', 'failed', 'stall', 'timeout', 'maxTurns', 'verifyFailed', 'mergeFailed']);
+
+/**
+ * 这条任务是否需要人处理：中断待继续、阻塞等人、或失败类终态。
+ * 「知道了」之后不再算，避免一个已经看过的失败一直占着默认视图。
+ */
+function needsAttention(t) {
+  if (!t || t.attentionDismissed) return false;
+  if (t.status === 'interrupted' && t.round) return true;
+  return NEEDS_ATTENTION.has(t.endReason);
+}
+
+/** 会话的任务列表（新的在前），附带每条的合计和「是否需要人处理」 */
 function list(key) {
   return read(key)
     .reverse()
-    .map((t) => ({ ...t, totals: totalsOf(t) }));
+    .map((t) => ({ ...t, totals: totalsOf(t), needsAttention: needsAttention(t) }));
 }
 
 /**
@@ -433,6 +452,23 @@ function dismissAttention(key, taskId) {
   return true;
 }
 
+/** 还没处理掉的任务级 worktree：启动清理时要跳过它们，否则现场就没了 */
+function worktreeDirs() {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir()).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    for (const t of read(name.slice(0, -5))) {
+      if (t.worktree && t.worktree.dir && !t.worktree.merged) out.push(t.worktree.dir);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   Task,
   list,
@@ -445,6 +481,8 @@ module.exports = {
   interruptAll,
   discardResume,
   dismissAttention,
+  needsAttention,
+  worktreeDirs,
   liveFile,
   readLive,
 };

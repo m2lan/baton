@@ -135,16 +135,19 @@ async function removeWorktree(root, dir) {
 /**
  * 收拾上次没清理掉的 worktree（跑到一半 app 被关掉时会留下）。
  * worktree 目录里的 .git 文件指回主仓库，借它找到主仓库再正规地 remove。
+ * keep 里的目录属于还没处理的任务现场，必须原样保留，否则用户排查/手动合并的入口就没了。
  */
-async function cleanupStale(wtRoot) {
+async function cleanupStale(wtRoot, keep = []) {
   let names = [];
   try {
     names = fs.readdirSync(wtRoot);
   } catch {
     return;
   }
+  const skip = new Set((keep || []).map((d) => path.resolve(d)));
   for (const name of names) {
     const dir = path.join(wtRoot, name);
+    if (skip.has(path.resolve(dir))) continue;
     const r = await git(dir, ['rev-parse', '--git-common-dir']);
     if (r.ok) {
       const common = path.resolve(dir, r.stdout.trim());

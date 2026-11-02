@@ -754,6 +754,12 @@
           <button :class="{on: runsView.tab==='task'}" @click="setRunsTab('task')">{{ t('runs.tabTasks') }}</button>
           <button :class="{on: runsView.tab==='usage'}" @click="setRunsTab('usage')">{{ t('runs.tabUsage') }}</button>
         </div>
+        <div v-if="runsView.tab==='task'" class="seg runs-filter">
+          <button :class="{on: runsView.filter==='attention'}" @click="setRunsFilter('attention')">
+            {{ t('runs.filterAttention') }}<span v-if="attentionCount" class="seg-count">{{ attentionCount }}</span>
+          </button>
+          <button :class="{on: runsView.filter==='all'}" @click="setRunsFilter('all')">{{ t('runs.filterAll') }}</button>
+        </div>
         <div v-if="runsView.tab==='usage'" class="seg days">
           <button v-for="d in [1, 7, 30, 0]" :key="d" :class="{on: runsView.days===d}" @click="setUsageDays(d)">
             {{ d===0 ? t('usage.all') : d===1 ? t('usage.today') : t('usage.days', {n: d}) }}
@@ -797,8 +803,8 @@
               <div><b>{{fmtClock(now - runsView.live.startedAt)}}</b><span>{{ t('runs.statElapsed') }}</span></div>
             </div>
           </div>
-          <div v-if="!runsView.tasks.length && !runsView.live" class="runs-empty">{{ t('runs.empty') }}</div>
-          <div v-for="tk in runsView.tasks" :key="tk.id" class="run-task" :class="{open: runsView.openTask===tk.id}">
+          <div v-if="!runsTasks.length && !runsView.live" class="runs-empty">{{ runsView.filter==='attention' ? t('runs.emptyAttention') : t('runs.empty') }}</div>
+          <div v-for="tk in runsTasks" :key="tk.id" class="run-task" :class="{open: runsView.openTask===tk.id}">
             <div class="rt-head" @click="runsView.openTask = runsView.openTask===tk.id ? '' : tk.id">
               <span class="rt-time">{{fmtTime(tk.startedAt)}}</span>
               <span class="rt-text">{{tk.userText}}</span>

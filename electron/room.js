@@ -309,7 +309,7 @@ class Room {
       isLeader ? '你是本房间的负责人，用户没点名时由你主答。' : '',
     ];
 
-    const ctx = this.contextFor(group, bot, { fresh: !!job.worktree });
+    const ctx = this.contextFor(group, bot, { fresh: !!(job.worktree || job.isolated) });
     if (ctx.asks.length) chunks.push(`【用户的需求】\n${ctx.asks.join('\n')}`);
 
     // 决策板优先级高于零散结论：已经定下来的事不该被后来的成员推翻
@@ -333,6 +333,11 @@ class Room {
     }
     if (job.worktree) {
       chunks.push('【隔离目录】你这次在一个独立的 git worktree 里工作，和其他成员并行。只改和你任务相关的文件；跑完后改动会自动合回主目录。');
+    }
+    if (job.isolated) {
+      chunks.push(
+        '【隔离目录】这一轮任务在一个独立的 git worktree 里执行，成员依次工作。只改和任务相关的文件；成功结束后会自动合回主目录，失败则保留现场等用户处理。'
+      );
     }
     if (job.attachFiles && job.attachFiles.length) chunks.push(files.promptSection(job.attachFiles));
 
@@ -421,6 +426,86 @@ class Room {
   }
 
   /**
+   * 任务级隔离：整条串行链共用一个 detached worktree，成功才合回主目录。
+   * 只在「串行 + 群有共同 git 仓库 + 成员没有各自目录」时启用；
+   * 并发批已经按人隔离，再来一层任务级只会让两条线打架。
+   */
+  async openTaskWorktree(group, task, members, queue) {
+    if (group.worktree === false || !group.cwd) return null;
+    if (group.concurrent && queue.length > 1) return null;
+    const shared = members.every((m) => !m.cwd || path.resolve(m.cwd) === path.resolve(group.cwd));
+    if (!shared) return null;
+    const root = await git.repoRoot(group.cwd);
+    if (!root) return null;
+    const base = await git.snapshot(root);
+    if (!base) return null;
+    const dir = path.join(this.store.root(), 'worktrees', `task-${task.data.id}`);
+    const r = await git.addWorktree(root, dir, base);
+    if (!r.ok) {
+      this.pushSystem(
+        group.id,
+        L(`创建任务隔离目录失败，改为直接在原目录跑：${r.error}`, `Could not create an isolated task worktree, running in the original directory: ${r.error}`)
+      );
+      return null;
+    }
+    task.setWorktree({ root, dir, merged: false });
+    this.pushSystem(
+      group.id,
+      L(
+        '这一轮任务在独立 worktree 里执行，成功结束后改动会自动合回主目录（未提交）。',
+        'This task runs in an isolated worktree; changes are applied back to the main directory (uncommitted) when it succeeds.'
+      )
+    );
+    return { root, dir, base };
+  }
+
+  /**
+   * 收尾任务级 worktree：成功才合并；失败 / 阻塞 / 停止保留现场，不硬合。
+   * @returns {string|null} 需要改写 endReason 时返回新值（合并失败）
+   */
+  async closeTaskWorktree(group, task, iso, endReason) {
+    const okEnd = ['done', 'passed', 'verifyPassed'].includes(endReason);
+    if (!okEnd) {
+      task.setWorktree({ root: iso.root, dir: iso.dir, merged: false, kept: true });
+      this.pushSystem(
+        group.id,
+        L(
+          `任务没有成功结束，隔离目录保留在：${iso.dir}\n确认没用后可以手动删除；要保留改动就从那里取。`,
+          `The task did not finish successfully. Its worktree is kept at: ${iso.dir}\nDelete it manually when no longer needed.`
+        )
+      );
+      return null;
+    }
+    const final = await git.snapshot(iso.dir);
+    const patch = final ? await git.diffPatch(iso.root, iso.base, final) : null;
+    if (!patch || !patch.trim()) {
+      await git.removeWorktree(iso.root, iso.dir);
+      task.setWorktree({ root: iso.root, dir: iso.dir, merged: true });
+      this.pushSystem(group.id, L('这一轮没有产生文件改动，隔离目录已清理。', 'No file changes this turn; the task worktree was cleaned up.'));
+      return null;
+    }
+    const ap = await git.applyPatch(iso.root, patch);
+    if (ap.ok) {
+      await git.removeWorktree(iso.root, iso.dir);
+      task.setWorktree({ root: iso.root, dir: iso.dir, merged: true });
+      this.pushSystem(
+        group.id,
+        L('已把这一轮的改动合回主目录（未提交，可以用 git status 查看）。', "Applied this turn's changes back to the main directory (uncommitted — see git status).")
+      );
+      return null;
+    }
+    task.setWorktree({ root: iso.root, dir: iso.dir, merged: false, kept: true });
+    this.pushSystem(
+      group.id,
+      L(
+        `改动合回主目录失败：${ap.error}\n隔离目录保留在：${iso.dir}，可以手动对比 / 合并。`,
+        `Could not apply the changes back: ${ap.error}\nThe worktree is kept at ${iso.dir} for a manual merge.`
+      )
+    );
+    return 'mergeFailed';
+  }
+
+  /**
    * 跑一个 job，返回 {bot, msg, hop, after}；失败返回 null（错误已经推进会话里了）
    * job: {botId, text, from, fromChanges?, worktree?: {root, dir, cwd, base}}
    */
@@ -444,7 +529,8 @@ class Room {
     }
 
     const wt = job.worktree;
-    const cwd = wt ? wt.cwd : group.cwd || bot.cwd;
+    const iso = live.iso;
+    const cwd = wt ? wt.cwd : iso ? iso.dir : group.cwd || bot.cwd;
     // 附件跟着整轮走：拖进来的文件 + 正文里 @ 的路径，按这个 Bot 实际的 cwd 解析，
     // 在 worktree 里也能指到同一份文件。prepare 会按 CLI 的能力决定放哪里。
     const refTokens = [...(live.refTokens || []), ...files.parseRefs(jobText, members.map((m) => m.name))];
@@ -460,12 +546,12 @@ class Room {
       extraDirs: prep.extraDirs,
       images: prep.images,
       // worktree 换了目录，原来的 session 在这里 resume 不了，开新会话
-      sessionId: wt ? '' : (group.sessions && group.sessions[bot.id]) || '',
+      sessionId: wt || iso ? '' : (group.sessions && group.sessions[bot.id]) || '',
     };
-    const prompt = this.buildPrompt(group, bot, { ...job, text: jobText, attachFiles: prep.files }, members);
+    const prompt = this.buildPrompt(group, bot, { ...job, text: jobText, isolated: !!iso, attachFiles: prep.files }, members);
 
     // 跑之前给工作区拍个快照，跑完再拍一次，就知道这一棒改了什么
-    const root = wt ? wt.dir : await git.repoRoot(cwd);
+    const root = wt ? wt.dir : iso ? iso.dir : await git.repoRoot(cwd);
     const before = wt ? wt.base : await git.snapshot(root);
 
     const startedAt = Date.now();
@@ -475,7 +561,7 @@ class Room {
     const r = await this.runner.run(target, agent, prompt, {
       key: `${group.id}:${bot.id}`,
       sender: { id: bot.id, name: bot.name, emoji: bot.emoji, color: bot.color, agentId: bot.agentId },
-      ephemeral: !!wt,
+      ephemeral: !!(wt || iso),
     });
     if (!r.ok) {
       live.task.clearRunning(bot.id);
@@ -674,7 +760,7 @@ class Room {
     if (!cmd) return 'skipped';
     const leaderId = group.leaderId || (group.memberIds || [])[0];
     const leader = this.getBot(leaderId);
-    const cwd = group.cwd || (leader && leader.cwd) || '';
+    const cwd = (live.iso && live.iso.dir) || group.cwd || (leader && leader.cwd) || '';
     if (!cwd || !fs.existsSync(cwd)) {
       this.pushSystem(group.id, L('设置了验收命令，但群和负责人都没有工作目录，跳过验收。', 'A verify command is set, but neither the room nor the lead has a working directory — skipping it.'));
       return 'skipped';
@@ -761,6 +847,10 @@ class Room {
     // 这一轮的身份（见 isCurrent）：被 stop 或被新一轮顶掉后，旧循环靠它收尾
     const isCurrent = () => this.isCurrent(group.id, live);
     this.emitState(group, { active: true, queue, turn: 0 }, live);
+
+    // 任务级隔离目录：整条串行链共用，成功才合回主目录
+    const iso = await this.openTaskWorktree(group, task, members, queue);
+    if (iso) live.iso = iso;
 
     // 一个 Bot 跑完之后的共同处理：收集决策、结构化标记，找下一个接手的人
     const settle = (res) => {
@@ -945,6 +1035,10 @@ class Room {
           );
         }
       }
+      if (isCurrent() && live.iso) {
+        const next = await this.closeTaskWorktree(group, task, live.iso, endReason);
+        if (next) endReason = next;
+      }
       task.finish(endReason);
       // 只有自己还是当前这一轮，才清 busy / live / 界面状态。
       // 否则会把「stop 之后马上又发的那一轮」一起清掉：界面显示空闲、实际还在跑。
@@ -1025,6 +1119,9 @@ function buildResumeText(task, names) {
     '上一轮因 Baton 退出而中断。先检查当前的文件状态（git status、相关文件）和会话记录，不要假设没跑完的步骤已经做完。',
   ];
   if (task.userText) lines.push(`原始需求：${task.userText}`);
+  if (task.worktree && task.worktree.dir && !task.worktree.merged) {
+    lines.push(`上一轮的隔离目录还在：${task.worktree.dir}。先检查那里的改动，再决定要不要合并。`);
+  }
   if (done.length) lines.push(`已经跑过的成员：${done.join('、')}（它们的工作可能只完成了一部分）`);
   if (names.length) {
     lines.push(`还需要接手：${names.join('、')}`);

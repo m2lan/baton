@@ -1043,8 +1043,8 @@ app.whenReady().then(() => {
       emit('agents:update', agentCache);
     })
     .catch(() => {});
-  // 上次群聊并发跑到一半被关掉，会留下临时 worktree，后台收拾掉
-  git.cleanupStale(path.join(store.root(), 'worktrees')).catch(() => {});
+  // 上次群聊跑到一半被关掉会留下临时 worktree；但任务级隔离目录可能是用户还要处理的现场，不能一起清掉
+  git.cleanupStale(path.join(store.root(), 'worktrees'), runlog.worktreeDirs()).catch(() => {});
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

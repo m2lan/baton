@@ -2,6 +2,25 @@
 
 本项目的重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.8.0] - 2026-11-02
+
+### Added
+
+- **任务级 worktree**：串行群聊任务整条链共用一个 detached worktree，成员依次在里面工作；成功结束后自动把改动合回主目录（未提交），失败 / 阻塞 / 停止保留现场，并在会话里给出路径。
+- 合并失败时任务标记为 `mergeFailed`，隔离目录保留，提示手动对比 / 合并；启动清理会跳过任何仍被任务引用的 worktree。
+- **Runs 默认只看需要人处理的任务**：中断、阻塞、失败类（`error` / `stall` / `timeout` / `maxTurns` / `verifyFailed` / `mergeFailed`）默认显示，带计数徽标；「全部」用于查历史。
+- `scripts/test-worktree.js`：真 git 仓库覆盖成功合并、阻塞保留、非 git 跳过、成员目录不一致跳过、启动清理不误删。
+
+### Changed
+
+- `needsAttention()` 统一判定，`runs:list` 每条任务都带 `needsAttention`。
+- 中断恢复说明会提示上一轮遗留的隔离目录路径。
+
+### Known limitations
+
+- 任务级 worktree 只用于**串行群聊任务**：单 Bot 没有并发冲突，隔离收益低；并发批沿用按人 worktree。
+- 群成员各自有独立 cwd 时无法统一隔离，自动退回原目录执行。
+
 ## [0.7.0] - 2026-11-02
 
 ### Added

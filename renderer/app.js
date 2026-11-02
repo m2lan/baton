@@ -206,7 +206,7 @@ createApp({
       worktree: true, verifyCmd: '', verifyMax: 3, verifyOwner: '',
     });
     // 运行记录弹窗：任务列表 / 用量汇总
-    const runsView = reactive({ tab: 'task', key: '', tasks: [], live: null, openTask: '', days: 7, summary: null });
+    const runsView = reactive({ tab: 'task', key: '', tasks: [], live: null, openTask: '', days: 7, summary: null, filter: 'attention' });
     // 每个会话最近一条需要人处理的任务：中断待继续，或阻塞等人。会话顶部提示条直接读它
     const attention = reactive({});
     // 实时：每个会话正在跑的任务快照、每个 Bot 当前这一跳的流式进度、走动的时钟
@@ -975,10 +975,25 @@ createApp({
           followTokens();
           followRelay();
         }
-        if (!runsView.openTask && runsView.tasks[0]) runsView.openTask = runsView.tasks[0].id;
+        if (!runsView.openTask) {
+          const first = runsView.filter === 'all' ? runsView.tasks[0] : runsView.tasks.find((t) => t.needsAttention);
+          if (first) runsView.openTask = first.id;
+        }
       } else {
         runsView.summary = await window.lb.usageSummary(runsView.days);
       }
+    }
+
+    /** 默认只看需要人处理的任务；健康任务在「全部」里查历史 */
+    const runsTasks = computed(() => {
+      const list = runsView.tasks || [];
+      return runsView.filter === 'all' ? list : list.filter((t) => t.needsAttention);
+    });
+    const attentionCount = computed(() => (runsView.tasks || []).filter((t) => t.needsAttention).length);
+
+    function setRunsFilter(v) {
+      runsView.filter = v;
+      runsView.openTask = '';
     }
 
     function setRunsTab(tab) {
@@ -1647,6 +1662,7 @@ createApp({
       appInfo, updateState, updateLabel, updateHint, canCheckUpdate, checkUpdate, installUpdate,
       t, loc, fromLabel, langPref, langCode, langOptions, setLang, themeOptions, themePref, setTheme,
       runsView, openHop, openChanges, openRuns, setRunsTab, setUsageDays, toggleHop, usageDays, botShares,
+      runsTasks, attentionCount, setRunsFilter,
       canResume, resumeTask, discardTask, attention, attentionText, loadAttention, resumeActive, dismissActive,
       fmtTokens, fmtCost, fmtDur, fmtTime, endLabel, sumTok,
       liveTasks, liveStream, now, tw, fmtClock, relayCols, nodeIcon, nodeSub, liveTokens, followTokens,
